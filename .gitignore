@@ -23,7 +23,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# misc
+#  misc
 .DS_Store
 Thumbs.db
 *.pem
