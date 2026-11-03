@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
+import bananaRoutes from "./modules/banana/banana.routes";
+
 dotenv.config();
 
 const app = express();
@@ -30,6 +32,9 @@ app.get("/api/v1/health", (_req, res) => {
     },
   });
 });
+
+// Banana API routes
+app.use("/api/v1/banana", bananaRoutes);
 
 // Start the server
 app.listen(PORT, () => {

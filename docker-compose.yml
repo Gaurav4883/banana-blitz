@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: banana-blitz-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: banana_user
+      POSTGRES_PASSWORD: banana_dev_password
+      POSTGRES_DB: banana_blitz
+    ports:
+      - "5432:5432"
+    volumes:
+      - banana_blitz_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U banana_user -d banana_blitz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  banana_blitz_postgres_data:
