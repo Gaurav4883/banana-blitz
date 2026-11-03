@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,4 +5,111 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum GameSessionStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+enum PuzzleStatus {
+  ACTIVE
+  SOLVED
+  FAILED
+  EXPIRED
+  SKIPPED
+}
+
+// ==========================================
+// USER
+// ==========================================
+
+model User {
+  id           String  @id @default(cuid())
+  displayName  String?
+  email        String? @unique
+  passwordHash String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  gameSessions GameSession[]
+
+  @@index([createdAt])
+}
+
+// ==========================================
+// GAME SESSION
+// ==========================================
+
+model GameSession {
+  id     String            @id @default(cuid())
+  userId String?
+  status GameSessionStatus @default(ACTIVE)
+
+  score         Int @default(0)
+  totalPuzzles  Int @default(0)
+  solvedPuzzles Int @default(0)
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  puzzles Puzzle[]
+
+  @@index([userId, startedAt])
+  @@index([status, startedAt])
+}
+
+// ==========================================
+// PUZZLE
+// ==========================================
+
+model Puzzle {
+  id            String       @id @default(cuid())
+  gameSessionId String
+  questionUrl   String
+  solution      Float
+  status        PuzzleStatus @default(ACTIVE)
+
+  maxAttempts  Int @default(10)
+  attemptsUsed Int @default(0)
+
+  expiresAt DateTime
+  solvedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  gameSession GameSession     @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+  attempts    PuzzleAttempt[]
+
+  @@index([gameSessionId, status])
+  @@index([status, expiresAt])
+}
+
+// ==========================================
+// PUZZLE ATTEMPT
+// ==========================================
+
+model PuzzleAttempt {
+  id       String @id @default(cuid())
+  puzzleId String
+
+  answer        Float
+  isCorrect     Boolean
+  attemptNumber Int
+
+  createdAt DateTime @default(now())
+
+  puzzle Puzzle @relation(fields: [puzzleId], references: [id], onDelete: Cascade)
+
+  @@unique([puzzleId, attemptNumber])
+  @@index([puzzleId, createdAt])
 }
