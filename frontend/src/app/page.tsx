@@ -7,6 +7,7 @@ const API_BASE_URL =
 
 interface Puzzle {
   puzzleId: string;
+  gameSessionId: string;
   question: string;
 }
 
@@ -36,6 +37,8 @@ export default function Home() {
   const [isCorrect, setIsCorrect] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [gameSessionId, setGameSessionId] = useState<string | null>(null);
+
   async function generatePuzzle() {
     setGenerating(true);
     setError(null);
@@ -46,7 +49,13 @@ export default function Home() {
     setRemainingAttempts(10);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/banana/puzzle`);
+      const puzzleUrl = new URL(`${API_BASE_URL}/banana/puzzle`);
+
+      if (gameSessionId) {
+        puzzleUrl.searchParams.set("gameSessionId", gameSessionId);
+      }
+
+      const response = await fetch(puzzleUrl.toString());
 
       const result: GeneratePuzzleResponse = await response.json();
 
@@ -54,6 +63,7 @@ export default function Home() {
         throw new Error(result.message || "Unable to generate a puzzle.");
       }
 
+      setGameSessionId(result.data.gameSessionId);
       setPuzzle(result.data);
     } catch (err) {
       setError(

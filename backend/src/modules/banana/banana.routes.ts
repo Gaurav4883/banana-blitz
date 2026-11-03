@@ -8,7 +8,7 @@ router.get("/puzzle", (req, res) => {
 });
 
 router.post("/answer", (req, res) => {
-  bananaController.submitAnswer(req, res);
+  void bananaController.submitAnswer(req, res);
 });
 
 export default router;

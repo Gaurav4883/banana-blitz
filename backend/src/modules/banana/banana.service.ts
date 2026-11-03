@@ -18,7 +18,7 @@ const activePuzzles = new Map<string, ActivePuzzle>();
 export class BananaService {
   // Request a new puzzle from the external Banana API.
 
-  async generatePuzzle(): Promise<PublicPuzzle> {
+  async generatePuzzle(): Promise<BananaApiResponse> {
     const controller = new AbortController();
 
     const timeout = setTimeout(() => {
@@ -62,21 +62,9 @@ export class BananaService {
         throw new Error("Banana API returned an invalid image URL");
       }
 
-      const puzzleId = randomUUID();
-
-      const activePuzzle: ActivePuzzle = {
-        puzzleId,
+      return {
         question: questionUrl.toString(),
         solution: bananaData.solution,
-        attempts: 0,
-        expiresAt: Date.now() + PUZZLE_EXPIRY_MS,
-      };
-
-      activePuzzles.set(puzzleId, activePuzzle);
-
-      return {
-        puzzleId: activePuzzle.puzzleId,
-        question: activePuzzle.question,
       };
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {

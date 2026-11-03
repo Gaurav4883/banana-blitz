@@ -1,10 +1,21 @@
 import { Request, Response } from "express";
-import { bananaService } from "./banana.service";
+import { gameService } from "../game/game.service";
 
 export class BananaController {
-  async generatePuzzle(_req: Request, res: Response): Promise<void> {
+  /**
+   * GET /api/v1/banana/puzzle
+   *
+   * Optional query parameter:
+   * gameSessionId
+   */
+  async generatePuzzle(req: Request, res: Response): Promise<void> {
     try {
-      const puzzle = await bananaService.generatePuzzle();
+      const gameSessionId =
+        typeof req.query.gameSessionId === "string"
+          ? req.query.gameSessionId
+          : undefined;
+
+      const puzzle = await gameService.generatePuzzle(gameSessionId);
 
       res.status(200).json({
         success: true,
@@ -22,8 +33,10 @@ export class BananaController {
     }
   }
 
-  // POST /api/v1/banana/answer check if answe is correct or not.
-  submitAnswer(req: Request, res: Response): void {
+  /**
+   * POST /api/v1/banana/answer
+   */
+  async submitAnswer(req: Request, res: Response): Promise<void> {
     try {
       const { puzzleId, answer } = req.body ?? {};
 
@@ -43,7 +56,7 @@ export class BananaController {
         return;
       }
 
-      const result = bananaService.submitAnswer(puzzleId, answer);
+      const result = await gameService.submitAnswer(puzzleId, answer);
 
       res.status(200).json({
         success: true,
@@ -54,12 +67,7 @@ export class BananaController {
       const message =
         error instanceof Error ? error.message : "Unable to submit answer";
 
-      const statusCode =
-        message.includes("not found") ||
-        message.includes("expired") ||
-        message.includes("Maximum attempts")
-          ? 404
-          : 400;
+      const statusCode = message.includes("not found") ? 404 : 400;
 
       res.status(statusCode).json({
         success: false,

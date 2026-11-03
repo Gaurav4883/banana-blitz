@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 
 import bananaRoutes from "./modules/banana/banana.routes";
+import gameRoutes from "./modules/game/game.routes";
 
 dotenv.config();
 
@@ -35,6 +36,7 @@ app.get("/api/v1/health", (_req, res) => {
 
 // Banana API routes
 app.use("/api/v1/banana", bananaRoutes);
+app.use("/api/v1/game", gameRoutes);
 
 // Start the server
 app.listen(PORT, () => {
