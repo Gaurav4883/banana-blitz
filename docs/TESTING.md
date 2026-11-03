@@ -14,7 +14,7 @@ Tests must reflect the actual implementation and must not be marked as passed wi
 - **Action:** Send a GET request to `/api/v1/health`.
 - **Expected result:** HTTP 200 and a JSON response indicating that the service is healthy.
 - **Actual result:** HTTP 200 and the expected JSON response.
-- **Status:** Passed.
+- **Status:** Passed..
 
 ### Test 2: Frontend Connection
 
