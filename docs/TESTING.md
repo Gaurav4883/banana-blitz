@@ -51,3 +51,31 @@ Planned areas include:
 Where appropriate, retain genuine screenshots, terminal output, automated test results, and demonstration notes.
 
 Update the results whenever implementation changes make a previous test obsolete or require it to be repeated.
+
+## Banana Service Automated Tests
+
+Testing framework: Vitest
+
+The Banana service was tested using mocked external API responses to avoid depending on the availability of the third-party Banana API.
+
+### Test cases
+
+| Test case            | Expected result                               |
+| -------------------- | --------------------------------------------- |
+| Generate puzzle      | Returns a puzzle ID and image URL             |
+| Hide solution        | Correct answer is not exposed to the frontend |
+| Correct answer       | Accepts the correct answer                    |
+| Incorrect answer     | Rejects the answer and decreases attempts     |
+| Unknown puzzle       | Rejects an invalid puzzle ID                  |
+| External API failure | Handles an HTTP 503 response                  |
+| Invalid JSON         | Rejects malformed API responses               |
+
+### Test execution
+
+Command: `pnpm --dir backend test`
+
+Status: Update after running the tests.
+
+Build command: `pnpm --dir backend build`
+
+Build status: Update after running the build.
