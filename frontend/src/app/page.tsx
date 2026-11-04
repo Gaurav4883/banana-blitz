@@ -9,6 +9,8 @@ import {
   gameApi,
 } from "@/lib/api";
 
+import GameLobby from "@/components/game-lobby";
+
 type LoadingAction = "start" | "answer" | "skip" | "next" | null;
 
 export default function Home() {
@@ -22,6 +24,60 @@ export default function Home() {
   const [feedback, setFeedback] = useState<AnswerResult | null>(null);
   const [loading, setLoading] = useState<LoadingAction>(null);
   const [error, setError] = useState("");
+
+  const [joinSessionId, setJoinSessionId] = useState("");
+
+  const joinExistingGame = async () => {
+    const sessionId = joinSessionId.trim();
+
+    if (!sessionId) {
+      setError("Please enter a game session ID.");
+      return;
+    }
+
+    setLoading("start");
+    setError("");
+    setFeedback(null);
+    setPuzzle(null);
+    setSession(null);
+    setSessionDetails(null);
+
+    try {
+      const details = await gameApi.getSession(sessionId);
+
+      if (details.status !== "ACTIVE") {
+        throw new Error("This game session is not active.");
+      }
+
+      setSession({
+        id: details.id,
+        status: details.status,
+        score: details.score,
+        totalPuzzles: details.totalPuzzles,
+        solvedPuzzles: details.solvedPuzzles,
+        startedAt: details.startedAt,
+      });
+
+      setSessionDetails(details);
+
+      const activePuzzle = details.puzzles.find(
+        (item) => item.status === "ACTIVE",
+      );
+
+      if (activePuzzle) {
+        setPuzzle(activePuzzle);
+      } else {
+        const newPuzzle = await gameApi.createPuzzle(details.id);
+        setPuzzle(newPuzzle);
+      }
+
+      setAnswer("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to join this game");
+    } finally {
+      setLoading(null);
+    }
+  };
 
   const refreshSession = async (sessionId: string) => {
     const details = await gameApi.getSession(sessionId);
@@ -161,6 +217,8 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
+      {session && <GameLobby sessionId={session.id} />}
+
       <div className="mx-auto max-w-3xl">
         <header className="mb-10 text-center">
           <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-yellow-400">
@@ -186,7 +244,7 @@ export default function Home() {
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-8">
           {!session && !loading && (
-            <div className="py-12 text-center">
+            <div className="py-10 text-center">
               <div className="mb-5 text-6xl" aria-hidden="true">
                 🍌
               </div>
@@ -194,15 +252,46 @@ export default function Home() {
               <h2 className="text-2xl font-bold">Ready to play?</h2>
 
               <p className="mt-2 text-slate-400">
-                Start a new game and solve your first puzzle.
+                Create a new game or join an existing game.
               </p>
 
               <button
                 onClick={startGame}
-                className="mt-7 rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
+                className="mt-7 w-full rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300"
               >
-                Start Game
+                Create New Game
               </button>
+
+              <div className="my-7 flex items-center gap-3">
+                <div className="h-px flex-1 bg-slate-700" />
+                <span className="text-xs uppercase text-slate-500">
+                  or join a game
+                </span>
+                <div className="h-px flex-1 bg-slate-700" />
+              </div>
+
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void joinExistingGame();
+                }}
+                className="flex flex-col gap-3 sm:flex-row"
+              >
+                <input
+                  value={joinSessionId}
+                  onChange={(event) => setJoinSessionId(event.target.value)}
+                  placeholder="Enter game session ID"
+                  className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-yellow-400"
+                />
+
+                <button
+                  type="submit"
+                  disabled={!joinSessionId.trim()}
+                  className="rounded-xl border border-yellow-400 px-6 py-3 font-bold text-yellow-400 transition hover:bg-yellow-400 hover:text-slate-950 disabled:opacity-50"
+                >
+                  Join Game
+                </button>
+              </form>
             </div>
           )}
 
