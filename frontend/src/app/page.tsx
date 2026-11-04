@@ -1,336 +1,382 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import {
+  AnswerResult,
+  GameSession,
+  Puzzle,
+  SessionDetails,
+  gameApi,
+} from "@/lib/api";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000/api/v1";
-
-interface Puzzle {
-  puzzleId: string;
-  gameSessionId: string;
-  question: string;
-}
-
-interface GeneratePuzzleResponse {
-  success: boolean;
-  message: string;
-  data: Puzzle;
-}
-
-interface SubmitAnswerResponse {
-  success: boolean;
-  message: string;
-  data: {
-    correct: boolean;
-    message: string;
-    remainingAttempts: number;
-  };
-}
+type LoadingAction = "start" | "answer" | "skip" | "next" | null;
 
 export default function Home() {
+  const [session, setSession] = useState<GameSession | null>(null);
+  const [sessionDetails, setSessionDetails] = useState<SessionDetails | null>(
+    null,
+  );
   const [puzzle, setPuzzle] = useState<Puzzle | null>(null);
+
   const [answer, setAnswer] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [remainingAttempts, setRemainingAttempts] = useState(10);
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [isCorrect, setIsCorrect] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<AnswerResult | null>(null);
+  const [loading, setLoading] = useState<LoadingAction>(null);
+  const [error, setError] = useState("");
 
-  const [gameSessionId, setGameSessionId] = useState<string | null>(null);
+  const refreshSession = async (sessionId: string) => {
+    const details = await gameApi.getSession(sessionId);
+    setSessionDetails(details);
+    setSession({
+      id: details.id,
+      status: details.status,
+      score: details.score,
+      totalPuzzles: details.totalPuzzles,
+      solvedPuzzles: details.solvedPuzzles,
+      startedAt: details.startedAt,
+    });
+  };
 
-  async function generatePuzzle() {
-    setGenerating(true);
-    setError(null);
+  const startGame = async () => {
+    setLoading("start");
+    setError("");
     setFeedback(null);
-    setPuzzle(null);
     setAnswer("");
-    setIsCorrect(false);
-    setRemainingAttempts(10);
+    setPuzzle(null);
+    setSession(null);
+    setSessionDetails(null);
 
     try {
-      const puzzleUrl = new URL(`${API_BASE_URL}/banana/puzzle`);
+      const newSession = await gameApi.createSession();
+      setSession(newSession);
 
-      if (gameSessionId) {
-        puzzleUrl.searchParams.set("gameSessionId", gameSessionId);
-      }
+      const newPuzzle = await gameApi.createPuzzle(newSession.id);
+      setPuzzle(newPuzzle);
 
-      const response = await fetch(puzzleUrl.toString());
+      await refreshSession(newSession.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start the game");
+    } finally {
+      setLoading(null);
+    }
+  };
 
-      const result: GeneratePuzzleResponse = await response.json();
+  const loadNextPuzzle = async () => {
+    if (!session) return;
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Unable to generate a puzzle.");
-      }
+    setLoading("next");
+    setError("");
+    setFeedback(null);
+    setAnswer("");
 
-      setGameSessionId(result.data.gameSessionId);
-      setPuzzle(result.data);
+    try {
+      const newPuzzle = await gameApi.createPuzzle(session.id);
+      setPuzzle(newPuzzle);
+      await refreshSession(session.id);
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Something went wrong while generating the puzzle.",
+        err instanceof Error ? err.message : "Unable to load the next puzzle",
       );
     } finally {
-      setGenerating(false);
+      setLoading(null);
     }
-  }
+  };
 
-  async function submitAnswer(event: FormEvent<HTMLFormElement>) {
+  const submitAnswer = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!puzzle || isCorrect || remainingAttempts <= 0) {
-      return;
-    }
+    if (!puzzle || !session || !answer.trim()) return;
 
     const numericAnswer = Number(answer);
 
-    if (answer.trim() === "" || !Number.isFinite(numericAnswer)) {
-      setError("Please enter a valid numeric answer.");
+    if (!Number.isFinite(numericAnswer)) {
+      setError("Please enter a valid number.");
       return;
     }
 
-    setSubmitting(true);
-    setError(null);
+    setLoading("answer");
+    setError("");
     setFeedback(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/banana/answer`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          puzzleId: puzzle.puzzleId,
-          answer: numericAnswer,
-        }),
-      });
+      const result = await gameApi.submitAnswer(puzzle.id, numericAnswer);
 
-      const result: SubmitAnswerResponse = await response.json();
+      setFeedback(result);
+      setPuzzle((current) =>
+        current
+          ? {
+              ...current,
+              attemptsUsed: result.attemptsUsed,
+              status: result.correct
+                ? "SOLVED"
+                : result.attemptsRemaining === 0
+                  ? "FAILED"
+                  : "ACTIVE",
+            }
+          : null,
+      );
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Unable to check your answer.");
+      setAnswer("");
+      await refreshSession(session.id);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Unable to submit your answer";
+
+      setError(message);
+
+      if (message.toLowerCase().includes("expired")) {
+        setPuzzle((current) =>
+          current ? { ...current, status: "EXPIRED" } : null,
+        );
       }
+    } finally {
+      setLoading(null);
+    }
+  };
 
-      setFeedback(result.data.message);
-      setIsCorrect(result.data.correct);
-      setRemainingAttempts(result.data.remainingAttempts);
+  const skipPuzzle = async () => {
+    if (!puzzle || !session) return;
 
-      if (!result.data.correct) {
-        setAnswer("");
-      }
+    setLoading("skip");
+    setError("");
+    setFeedback(null);
+
+    try {
+      await gameApi.skipPuzzle(puzzle.id);
+
+      const newPuzzle = await gameApi.createPuzzle(session.id);
+      setPuzzle(newPuzzle);
+      setAnswer("");
+
+      await refreshSession(session.id);
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Something went wrong while checking your answer.",
+        err instanceof Error ? err.message : "Unable to skip this puzzle",
       );
     } finally {
-      setSubmitting(false);
+      setLoading(null);
     }
-  }
+  };
 
-  const gameOver = remainingAttempts <= 0 && !isCorrect;
+  const isPuzzleFinished = puzzle !== null && puzzle.status !== "ACTIVE";
 
   return (
-    <main className="relative flex min-h-screen flex-col overflow-hidden bg-slate-950 text-white">
-      {/* Background decoration */}
-      <div className="pointer-events-none absolute -left-40 -top-40 h-96 w-96 rounded-full bg-amber-500/10 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-40 -right-40 h-96 w-96 rounded-full bg-orange-500/10 blur-3xl" />
+    <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
+      <div className="mx-auto max-w-3xl">
+        <header className="mb-10 text-center">
+          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-yellow-400">
+            A Banana Puzzle Game
+          </p>
 
-      {/* Navigation */}
-      <header className="relative z-10 border-b border-white/10">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-400 text-xl font-black text-slate-950">
-              B
+          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
+            Banana Blitz
+          </h1>
+
+          <p className="mt-3 text-slate-400">
+            Solve the puzzle, earn points, and challenge yourself.
+          </p>
+        </header>
+
+        {session && (
+          <section className="mb-6 grid grid-cols-3 gap-3">
+            <StatCard label="Score" value={session.score} />
+            <StatCard label="Puzzles" value={session.totalPuzzles} />
+            <StatCard label="Solved" value={session.solvedPuzzles} />
+          </section>
+        )}
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-8">
+          {!session && !loading && (
+            <div className="py-12 text-center">
+              <div className="mb-5 text-6xl" aria-hidden="true">
+                🍌
+              </div>
+
+              <h2 className="text-2xl font-bold">Ready to play?</h2>
+
+              <p className="mt-2 text-slate-400">
+                Start a new game and solve your first puzzle.
+              </p>
+
+              <button
+                onClick={startGame}
+                className="mt-7 rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
+              >
+                Start Game
+              </button>
             </div>
+          )}
 
+          {loading === "start" && (
+            <LoadingMessage message="Starting your game..." />
+          )}
+
+          {session && !puzzle && loading !== "start" && (
+            <div className="py-10 text-center">
+              <p className="text-slate-300">
+                Your session has been created, but no puzzle is loaded.
+              </p>
+              <button
+                onClick={loadNextPuzzle}
+                disabled={loading !== null}
+                className="mt-5 rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 disabled:opacity-50"
+              >
+                Retry loading puzzle
+              </button>
+            </div>
+          )}
+
+          {puzzle && (
             <div>
-              <h1 className="text-lg font-extrabold tracking-tight">
-                Banana Blitz
-              </h1>
-              <p className="text-xs text-slate-400">The puzzle arena</p>
-            </div>
-          </div>
-
-          <div className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-xs font-semibold text-emerald-300">
-            ● Game server
-          </div>
-        </div>
-      </header>
-
-      {/* Game area */}
-      <section className="relative z-10 flex flex-1 items-center justify-center px-5 py-12">
-        <div className="w-full max-w-3xl">
-          {/* Heading */}
-          <div className="mb-10 text-center">
-            <p className="mb-3 text-sm font-bold uppercase tracking-[0.3em] text-amber-400">
-              Think fast. Solve faster.
-            </p>
-
-            <h2 className="text-4xl font-black tracking-tight sm:text-6xl">
-              Ready for the
-              <span className="block text-amber-400">challenge?</span>
-            </h2>
-
-            <p className="mx-auto mt-5 max-w-lg text-sm leading-7 text-slate-400 sm:text-base">
-              Look carefully at the puzzle, figure out the missing number, and
-              submit your answer before you run out of attempts.
-            </p>
-          </div>
-
-          {/* Game card */}
-          <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-2xl shadow-black/30 backdrop-blur sm:p-8">
-            {/* Game information */}
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-                  Current challenge
-                </p>
-                <p className="mt-1 font-bold text-white">
-                  Banana Number Puzzle
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-2 text-right">
-                <p className="text-xs text-slate-400">Attempts left</p>
-                <p className="text-xl font-black text-amber-400">
-                  {remainingAttempts}/10
-                </p>
-              </div>
-            </div>
-
-            {/* Puzzle display */}
-            <div className="flex min-h-72 items-center justify-center rounded-2xl border border-dashed border-white/10 bg-slate-950/70 p-5">
-              {generating ? (
-                <div className="text-center">
-                  <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-slate-700 border-t-amber-400" />
-                  <p className="text-sm text-slate-400">
-                    Generating your puzzle...
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold">Solve this puzzle</h2>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Enter the number you think is correct.
                   </p>
                 </div>
-              ) : puzzle ? (
-                <div className="w-full text-center">
-                  <p className="mb-4 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                    Solve this puzzle
-                  </p>
 
-                  <img
-                    src={puzzle.question}
-                    alt="Banana number puzzle"
-                    className="mx-auto max-h-80 max-w-full rounded-xl object-contain"
-                  />
-                </div>
-              ) : (
-                <div className="text-center">
-                  <div className="mb-4 text-6xl">🍌</div>
-                  <p className="font-bold text-slate-300">
-                    Your puzzle is waiting!
-                  </p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    Start a new game to receive your first challenge.
-                  </p>
+                <span className="rounded-full bg-slate-800 px-4 py-2 text-sm text-slate-300">
+                  Attempts: {puzzle.attemptsUsed}/{puzzle.maxAttempts}
+                </span>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-slate-700 bg-white p-3">
+                <img
+                  src={puzzle.questionUrl}
+                  alt="Banana puzzle"
+                  className="mx-auto max-h-[420px] w-full object-contain"
+                />
+              </div>
+
+              {feedback && (
+                <div
+                  role="status"
+                  className={`mt-5 rounded-xl p-4 ${
+                    feedback.correct
+                      ? "border border-green-700 bg-green-950/50 text-green-300"
+                      : "border border-yellow-700 bg-yellow-950/40 text-yellow-200"
+                  }`}
+                >
+                  <p className="font-semibold">{feedback.message}</p>
+
+                  {feedback.correct && (
+                    <p className="mt-1 text-sm">
+                      You earned {feedback.pointsAwarded} points!
+                    </p>
+                  )}
+
+                  {!feedback.correct && (
+                    <p className="mt-1 text-sm">
+                      {feedback.attemptsRemaining} attempts remaining.
+                    </p>
+                  )}
                 </div>
               )}
-            </div>
 
-            {/* Answer form */}
-            {puzzle && !isCorrect && !gameOver && (
-              <form onSubmit={submitAnswer} className="mt-7">
-                <label
-                  htmlFor="answer"
-                  className="mb-3 block text-sm font-semibold text-slate-300"
+              {error && (
+                <div
+                  role="alert"
+                  className="mt-5 rounded-xl border border-red-800 bg-red-950/40 p-4 text-sm text-red-300"
                 >
-                  Enter your answer
-                </label>
+                  {error}
+                </div>
+              )}
 
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <input
-                    id="answer"
-                    type="number"
-                    step="1"
-                    value={answer}
-                    onChange={(event) => setAnswer(event.target.value)}
-                    placeholder="Enter a number..."
-                    disabled={submitting}
-                    className="min-w-0 flex-1 rounded-xl border border-white/10 bg-slate-950 px-5 py-4 text-white outline-none transition placeholder:text-slate-600 focus:border-amber-400 disabled:opacity-50"
-                  />
+              {!isPuzzleFinished ? (
+                <>
+                  <form onSubmit={submitAnswer} className="mt-6">
+                    <label
+                      htmlFor="answer"
+                      className="mb-2 block text-sm font-medium text-slate-300"
+                    >
+                      Your answer
+                    </label>
+
+                    <div className="flex gap-3">
+                      <input
+                        id="answer"
+                        type="number"
+                        step="any"
+                        value={answer}
+                        onChange={(event) => setAnswer(event.target.value)}
+                        placeholder="Enter a number"
+                        disabled={loading !== null}
+                        className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-yellow-400"
+                      />
+
+                      <button
+                        type="submit"
+                        disabled={loading !== null || !answer.trim()}
+                        className="rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {loading === "answer" ? "Checking..." : "Submit"}
+                      </button>
+                    </div>
+                  </form>
 
                   <button
-                    type="submit"
-                    disabled={submitting || answer.trim() === ""}
-                    className="rounded-xl bg-amber-400 px-8 py-4 font-extrabold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={skipPuzzle}
+                    disabled={loading !== null}
+                    className="mt-4 w-full rounded-xl border border-slate-700 px-5 py-3 font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
                   >
-                    {submitting ? "Checking..." : "Submit Answer"}
+                    {loading === "skip" ? "Skipping..." : "Skip Puzzle"}
+                  </button>
+                </>
+              ) : (
+                <div className="mt-6">
+                  <p className="mb-4 text-center text-slate-300">
+                    {puzzle.status === "SOLVED"
+                      ? "Well done! Ready for another puzzle?"
+                      : puzzle.status === "FAILED"
+                        ? "This puzzle has ended. Try the next one!"
+                        : puzzle.status === "EXPIRED"
+                          ? "This puzzle has expired. Let's try another!"
+                          : "This puzzle was skipped."}
+                  </p>
+
+                  <button
+                    onClick={loadNextPuzzle}
+                    disabled={loading !== null}
+                    className="w-full rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
+                  >
+                    {loading === "next" ? "Loading..." : "Next Puzzle"}
                   </button>
                 </div>
-              </form>
-            )}
-
-            {/* Feedback */}
-            {feedback && (
-              <div
-                role="status"
-                className={`mt-6 rounded-xl border p-4 ${
-                  isCorrect
-                    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                    : "border-amber-400/30 bg-amber-400/10 text-amber-300"
-                }`}
-              >
-                <p className="font-bold">
-                  {isCorrect ? "🎉 Puzzle solved!" : "Keep trying!"}
-                </p>
-                <p className="mt-1 text-sm">{feedback}</p>
-              </div>
-            )}
-
-            {/* Error */}
-            {error && (
-              <div
-                role="alert"
-                className="mt-6 rounded-xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-300"
-              >
-                {error}
-              </div>
-            )}
-
-            {/* Game controls */}
-            <div className="mt-7 border-t border-white/10 pt-6">
-              {!puzzle || isCorrect || gameOver ? (
-                <button
-                  type="button"
-                  onClick={generatePuzzle}
-                  disabled={generating}
-                  className="w-full rounded-xl bg-amber-400 px-6 py-4 font-extrabold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {generating
-                    ? "Generating..."
-                    : isCorrect
-                      ? "Play Another Puzzle →"
-                      : gameOver
-                        ? "Try Another Puzzle →"
-                        : "Start Game →"}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={generatePuzzle}
-                  disabled={generating || submitting}
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-6 py-4 font-bold text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Skip Current Puzzle
-                </button>
               )}
             </div>
-          </div>
+          )}
+        </section>
 
-          {/* Footer */}
-          <p className="mt-7 text-center text-xs text-slate-600">
-            Banana Blitz · Puzzle your way to victory
+        {session && (
+          <p className="mt-5 text-center text-xs text-slate-500">
+            Session ID: {session.id}
           </p>
-        </div>
-      </section>
+        )}
+
+        <footer className="mt-10 text-center text-sm text-slate-600">
+          Banana Blitz · Software for Enterprise Project
+        </footer>
+      </div>
     </main>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-center">
+      <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-bold text-yellow-400">{value}</p>
+    </div>
+  );
+}
+
+function LoadingMessage({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-64 items-center justify-center gap-3 text-slate-300">
+      <span className="h-5 w-5 animate-spin rounded-full border-2 border-yellow-400 border-t-transparent" />
+      {message}
+    </div>
   );
 }
