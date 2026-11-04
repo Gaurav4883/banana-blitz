@@ -7,6 +7,8 @@ import { prisma } from "./config/prisma";
 
 import bananaRoutes from "./modules/banana/banana.routes";
 import gameRoutes from "./modules/game/game.routes";
+import { createServer } from "http";
+import { initializeSocket } from "./socket/socket";
 
 dotenv.config();
 
@@ -56,27 +58,36 @@ app.get("/api/v1/health", async (_req, res) => {
 app.use("/api/v1/banana", bananaRoutes);
 app.use("/api/v1/game", gameRoutes);
 
+const httpServer = createServer(app);
+const io = initializeSocket(httpServer, FRONTEND_ORIGIN);
+
 // Start application only after database connection succeeds.
 async function bootstrap() {
   try {
     await connectDatabase();
 
-    const server = app.listen(PORT, () => {
+    httpServer.listen(PORT, () => {
       console.log(`Banana Blitz API running at http://localhost:${PORT}`);
+      console.log("Socket.IO server initialized");
     });
 
+    let isShuttingDown = false;
+
     const shutdown = async () => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+
       console.log("Shutting down Banana Blitz...");
 
-      server.close(async () => {
+      io.close(async () => {
         await prisma.$disconnect();
         console.log("Database disconnected");
         process.exit(0);
       });
     };
 
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", () => void shutdown());
+    process.on("SIGTERM", () => void shutdown());
   } catch (error) {
     console.error("Application startup failed:", error);
     await prisma.$disconnect();
