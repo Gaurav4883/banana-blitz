@@ -1,170 +1,228 @@
 import { GameSessionStatus, PuzzleStatus } from "@prisma/client";
 import { prisma } from "../../config/prisma";
-import { bananaService } from "../banana/banana.service";
+import { bananaApiService } from "../banana/banana.service";
 
-const PUZZLE_EXPIRY_MS = 15 * 60 * 1000;
+const PUZZLE_TIME_LIMIT_MS = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 10;
+const POINTS_PER_CORRECT_ANSWER = 100;
 
 export class GameService {
-  /**
-   * Generate a puzzle and attach it to an existing game session.
-   * If no session ID is supplied, create a guest game session.
-   */
-  async generatePuzzle(gameSessionId?: string) {
-    let sessionId = gameSessionId;
-
-    if (sessionId) {
-      const session = await prisma.gameSession.findUnique({
-        where: { id: sessionId },
-      });
-
-      if (!session || session.status !== GameSessionStatus.ACTIVE) {
-        throw new Error("Active game session not found");
-      }
-    } else {
-      const session = await prisma.gameSession.create({
-        data: {},
-      });
-
-      sessionId = session.id;
-    }
-
-    // Mark any previous active puzzle in this session as skipped.
-    await prisma.puzzle.updateMany({
-      where: {
-        gameSessionId: sessionId,
-        status: PuzzleStatus.ACTIVE,
-      },
+  async createSession() {
+    const session = await prisma.gameSession.create({
       data: {
-        status: PuzzleStatus.SKIPPED,
+        status: GameSessionStatus.ACTIVE,
+      },
+      select: {
+        id: true,
+        status: true,
+        score: true,
+        totalPuzzles: true,
+        solvedPuzzles: true,
+        startedAt: true,
       },
     });
 
-    // Get a new puzzle from the external Banana API.
-    const bananaPuzzle = await bananaService.generatePuzzle();
+    return session;
+  }
+
+  async createPuzzle(sessionId: string) {
+    const session = await prisma.gameSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, status: true },
+    });
+
+    if (!session) {
+      throw new Error("GAME_SESSION_NOT_FOUND");
+    }
+
+    if (session.status !== GameSessionStatus.ACTIVE) {
+      throw new Error("GAME_SESSION_NOT_ACTIVE");
+    }
+
+    // Fetch from the external provider before writing to our database.
+    const puzzleData = await bananaApiService.fetchPuzzle();
 
     const puzzle = await prisma.$transaction(async (tx) => {
       const createdPuzzle = await tx.puzzle.create({
         data: {
-          gameSessionId: sessionId!,
-          questionUrl: bananaPuzzle.question,
-          solution: bananaPuzzle.solution,
+          gameSessionId: sessionId,
+          questionUrl: puzzleData.question,
+          solution: puzzleData.solution,
           maxAttempts: MAX_ATTEMPTS,
-          expiresAt: new Date(Date.now() + PUZZLE_EXPIRY_MS),
+          expiresAt: new Date(Date.now() + PUZZLE_TIME_LIMIT_MS),
+        },
+        select: {
+          id: true,
+          questionUrl: true,
+          status: true,
+          maxAttempts: true,
+          attemptsUsed: true,
+          expiresAt: true,
+          createdAt: true,
         },
       });
 
       await tx.gameSession.update({
-        where: { id: sessionId! },
-        data: {
-          totalPuzzles: { increment: 1 },
-        },
+        where: { id: sessionId },
+        data: { totalPuzzles: { increment: 1 } },
       });
 
       return createdPuzzle;
     });
 
-    // Never expose the solution.
+    // The solution is deliberately excluded from the returned object.
+    return puzzle;
+  }
+
+  async submitAnswer(puzzleId: string, answer: number) {
+    if (!Number.isFinite(answer)) {
+      throw new Error("INVALID_ANSWER");
+    }
+
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const puzzle = await tx.puzzle.findUnique({
+          where: { id: puzzleId },
+        });
+
+        if (!puzzle) {
+          throw new Error("PUZZLE_NOT_FOUND");
+        }
+
+        if (puzzle.status !== PuzzleStatus.ACTIVE) {
+          throw new Error("PUZZLE_NOT_ACTIVE");
+        }
+
+        if (new Date() > puzzle.expiresAt) {
+          await tx.puzzle.update({
+            where: { id: puzzleId },
+            data: { status: PuzzleStatus.EXPIRED },
+          });
+
+          // Return instead of throwing, so the update commits.
+          return { expired: true as const };
+        }
+
+        if (puzzle.attemptsUsed >= puzzle.maxAttempts) {
+          throw new Error("NO_ATTEMPTS_REMAINING");
+        }
+
+        const isCorrect = answer === puzzle.solution;
+        const attemptNumber = puzzle.attemptsUsed + 1;
+        const attemptsRemaining = puzzle.maxAttempts - attemptNumber;
+
+        await tx.puzzleAttempt.create({
+          data: {
+            puzzleId,
+            answer,
+            isCorrect,
+            attemptNumber,
+          },
+        });
+
+        if (isCorrect) {
+          await tx.puzzle.update({
+            where: { id: puzzleId },
+            data: {
+              attemptsUsed: attemptNumber,
+              status: PuzzleStatus.SOLVED,
+              solvedAt: new Date(),
+            },
+          });
+
+          await tx.gameSession.update({
+            where: { id: puzzle.gameSessionId },
+            data: {
+              score: { increment: POINTS_PER_CORRECT_ANSWER },
+              solvedPuzzles: { increment: 1 },
+            },
+          });
+
+          return {
+            expired: false as const,
+            correct: true,
+            message: "Correct answer!",
+            attemptsUsed: attemptNumber,
+            attemptsRemaining,
+            pointsAwarded: POINTS_PER_CORRECT_ANSWER,
+          };
+        }
+
+        const hasNoAttemptsLeft = attemptsRemaining <= 0;
+
+        await tx.puzzle.update({
+          where: { id: puzzleId },
+          data: {
+            attemptsUsed: attemptNumber,
+            status: hasNoAttemptsLeft
+              ? PuzzleStatus.FAILED
+              : PuzzleStatus.ACTIVE,
+          },
+        });
+
+        return {
+          expired: false as const,
+          correct: false,
+          message: hasNoAttemptsLeft
+            ? "No attempts remaining. This puzzle has ended."
+            : "Incorrect answer. Try again.",
+          attemptsUsed: attemptNumber,
+          attemptsRemaining,
+          pointsAwarded: 0,
+        };
+      },
+      {
+        isolationLevel: "Serializable",
+      },
+    );
+
+    if (result.expired) {
+      throw new Error("PUZZLE_EXPIRED");
+    }
+
+    return result;
+  }
+
+  async skipPuzzle(puzzleId: string) {
+    const puzzle = await prisma.puzzle.findUnique({
+      where: { id: puzzleId },
+      select: {
+        id: true,
+        gameSessionId: true,
+        status: true,
+      },
+    });
+
+    if (!puzzle) {
+      throw new Error("PUZZLE_NOT_FOUND");
+    }
+
+    if (puzzle.status !== PuzzleStatus.ACTIVE) {
+      throw new Error("PUZZLE_NOT_ACTIVE");
+    }
+
+    await prisma.puzzle.update({
+      where: { id: puzzleId },
+      data: { status: PuzzleStatus.SKIPPED },
+    });
+
     return {
-      gameSessionId: sessionId,
-      puzzleId: puzzle.id,
-      question: puzzle.questionUrl,
+      message: "Puzzle skipped",
+      sessionId: puzzle.gameSessionId,
     };
   }
 
-  /**
-   * Submit and record an answer.
-   */
-  async submitAnswer(puzzleId: string, answer: number) {
-    return prisma.$transaction(async (tx) => {
-      const puzzle = await tx.puzzle.findUnique({
-        where: { id: puzzleId },
-      });
-
-      if (!puzzle) {
-        throw new Error("Puzzle not found");
-      }
-
-      if (puzzle.status !== PuzzleStatus.ACTIVE) {
-        throw new Error("Puzzle is no longer active");
-      }
-
-      if (puzzle.expiresAt.getTime() <= Date.now()) {
-        await tx.puzzle.update({
-          where: { id: puzzleId },
-          data: { status: PuzzleStatus.EXPIRED },
-        });
-
-        throw new Error("Puzzle has expired. Generate a new one.");
-      }
-
-      if (puzzle.attemptsUsed >= puzzle.maxAttempts) {
-        await tx.puzzle.update({
-          where: { id: puzzleId },
-          data: { status: PuzzleStatus.FAILED },
-        });
-
-        throw new Error("Maximum attempts reached. Generate a new puzzle.");
-      }
-
-      const attemptNumber = puzzle.attemptsUsed + 1;
-      const correct = answer === puzzle.solution;
-      const remainingAttempts = puzzle.maxAttempts - attemptNumber;
-
-      await tx.puzzleAttempt.create({
-        data: {
-          puzzleId,
-          answer,
-          isCorrect: correct,
-          attemptNumber,
-        },
-      });
-
-      const updatedPuzzle = await tx.puzzle.update({
-        where: { id: puzzleId },
-        data: {
-          attemptsUsed: attemptNumber,
-          ...(correct
-            ? {
-                status: PuzzleStatus.SOLVED,
-                solvedAt: new Date(),
-              }
-            : remainingAttempts === 0
-              ? { status: PuzzleStatus.FAILED }
-              : {}),
-        },
-      });
-
-      if (correct) {
-        await tx.gameSession.update({
-          where: { id: puzzle.gameSessionId },
-          data: {
-            score: { increment: 100 },
-            solvedPuzzles: { increment: 1 },
-          },
-        });
-      }
-
-      return {
-        correct,
-        message: correct
-          ? "Correct answer! Well done."
-          : remainingAttempts === 0
-            ? "Incorrect answer. No attempts remaining."
-            : "Incorrect answer. Try again!",
-        remainingAttempts,
-        attemptsUsed: updatedPuzzle.attemptsUsed,
-      };
-    });
-  }
-
-  /**
-   * Retrieve a game session and its puzzle history.
-   */
-  async getGameSession(gameSessionId: string) {
+  async getSession(sessionId: string) {
     const session = await prisma.gameSession.findUnique({
-      where: { id: gameSessionId },
-      include: {
+      where: { id: sessionId },
+      select: {
+        id: true,
+        status: true,
+        score: true,
+        totalPuzzles: true,
+        solvedPuzzles: true,
+        startedAt: true,
+        completedAt: true,
         puzzles: {
           orderBy: { createdAt: "desc" },
           select: {
@@ -173,24 +231,16 @@ export class GameService {
             status: true,
             attemptsUsed: true,
             maxAttempts: true,
+            expiresAt: true,
             createdAt: true,
-            solvedAt: true,
-            attempts: {
-              orderBy: { attemptNumber: "asc" },
-              select: {
-                answer: true,
-                isCorrect: true,
-                attemptNumber: true,
-                createdAt: true,
-              },
-            },
+            // Never select the solution for a client-facing response.
           },
         },
       },
     });
 
     if (!session) {
-      throw new Error("Game session not found");
+      throw new Error("GAME_SESSION_NOT_FOUND");
     }
 
     return session;
