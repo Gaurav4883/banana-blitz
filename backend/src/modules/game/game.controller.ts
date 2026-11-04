@@ -34,6 +34,10 @@ function sendError(res: Response, error: unknown) {
       status: 400,
       message: "Please submit a valid numeric answer",
     },
+    GAME_CONFLICT: {
+      status: 409,
+      message: "The game was updated by another player. Please try again.",
+    },
   };
 
   const known = knownErrors[code];
