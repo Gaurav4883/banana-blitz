@@ -7,6 +7,19 @@ const MAX_ATTEMPTS = 10;
 const POINTS_PER_CORRECT_ANSWER = 100;
 
 export class GameService {
+  async getPuzzleSessionId(puzzleId: string): Promise<string> {
+    const puzzle = await prisma.puzzle.findUnique({
+      where: { id: puzzleId },
+      select: { gameSessionId: true },
+    });
+
+    if (!puzzle) {
+      throw new Error("PUZZLE_NOT_FOUND");
+    }
+
+    return puzzle.gameSessionId;
+  }
+
   async createSession() {
     const session = await prisma.gameSession.create({
       data: {
@@ -39,39 +52,82 @@ export class GameService {
       throw new Error("GAME_SESSION_NOT_ACTIVE");
     }
 
-    // Fetch from the external provider before writing to our database.
-    const puzzleData = await bananaApiService.fetchPuzzle();
-
-    const puzzle = await prisma.$transaction(async (tx) => {
-      const createdPuzzle = await tx.puzzle.create({
-        data: {
-          gameSessionId: sessionId,
-          questionUrl: puzzleData.question,
-          solution: puzzleData.solution,
-          maxAttempts: MAX_ATTEMPTS,
-          expiresAt: new Date(Date.now() + PUZZLE_TIME_LIMIT_MS),
-        },
-        select: {
-          id: true,
-          questionUrl: true,
-          status: true,
-          maxAttempts: true,
-          attemptsUsed: true,
-          expiresAt: true,
-          createdAt: true,
-        },
-      });
-
-      await tx.gameSession.update({
-        where: { id: sessionId },
-        data: { totalPuzzles: { increment: 1 } },
-      });
-
-      return createdPuzzle;
+    // Reuse the active puzzle if another player already generated it.
+    const existingPuzzle = await prisma.puzzle.findFirst({
+      where: {
+        gameSessionId: sessionId,
+        status: PuzzleStatus.ACTIVE,
+      },
+      select: {
+        id: true,
+        questionUrl: true,
+        status: true,
+        maxAttempts: true,
+        attemptsUsed: true,
+        expiresAt: true,
+        createdAt: true,
+      },
     });
 
-    // The solution is deliberately excluded from the returned object.
-    return puzzle;
+    if (existingPuzzle) {
+      return existingPuzzle;
+    }
+
+    const puzzleData = await bananaApiService.fetchPuzzle();
+
+    return prisma.$transaction(
+      async (tx) => {
+        // Check again inside the transaction to reduce duplicate creation.
+        const activePuzzle = await tx.puzzle.findFirst({
+          where: {
+            gameSessionId: sessionId,
+            status: PuzzleStatus.ACTIVE,
+          },
+          select: {
+            id: true,
+            questionUrl: true,
+            status: true,
+            maxAttempts: true,
+            attemptsUsed: true,
+            expiresAt: true,
+            createdAt: true,
+          },
+        });
+
+        if (activePuzzle) {
+          return activePuzzle;
+        }
+
+        const puzzle = await tx.puzzle.create({
+          data: {
+            gameSessionId: sessionId,
+            questionUrl: puzzleData.question,
+            solution: puzzleData.solution,
+            maxAttempts: MAX_ATTEMPTS,
+            expiresAt: new Date(Date.now() + PUZZLE_TIME_LIMIT_MS),
+          },
+          select: {
+            id: true,
+            questionUrl: true,
+            status: true,
+            maxAttempts: true,
+            attemptsUsed: true,
+            expiresAt: true,
+            createdAt: true,
+          },
+        });
+
+        await tx.gameSession.update({
+          where: { id: sessionId },
+          data: { totalPuzzles: { increment: 1 } },
+        });
+
+        return puzzle;
+      },
+      {
+        isolationLevel: "Serializable",
+      },
+    );
   }
 
   async submitAnswer(puzzleId: string, answer: number) {

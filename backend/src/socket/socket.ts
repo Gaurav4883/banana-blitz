@@ -168,3 +168,16 @@ export function getSocketServer(): Server {
 
   return io;
 }
+
+export function emitToGameSession(
+  sessionId: string,
+  event: string,
+  payload: unknown,
+): void {
+  if (!io) {
+    console.warn("Socket.IO is not initialized; event was not broadcast");
+    return;
+  }
+
+  io.to(getRoomName(sessionId)).emit(event, payload);
+}

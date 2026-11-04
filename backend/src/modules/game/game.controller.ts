@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { gameService } from "./game.service";
+import { emitToGameSession } from "../../socket/socket";
 
 function sendError(res: Response, error: unknown) {
   const code = error instanceof Error ? error.message : "INTERNAL_ERROR";
@@ -79,6 +80,7 @@ export const gameController = {
       }
 
       const puzzle = await gameService.createPuzzle(sessionId);
+      emitToGameSession(sessionId, "game:puzzle-updated", puzzle);
 
       return res.status(201).json({
         success: true,
@@ -109,7 +111,29 @@ export const gameController = {
         });
       }
 
+      const sessionId = await gameService.getPuzzleSessionId(puzzleId);
       const result = await gameService.submitAnswer(puzzleId, answer);
+      const session = await gameService.getSession(sessionId);
+
+      const puzzleStatus = result.correct
+        ? "SOLVED"
+        : result.attemptsRemaining === 0
+          ? "FAILED"
+          : "ACTIVE";
+
+      const sharedUpdate = {
+        puzzleId,
+        result,
+        puzzleStatus,
+        session: {
+          id: session.id,
+          score: session.score,
+          totalPuzzles: session.totalPuzzles,
+          solvedPuzzles: session.solvedPuzzles,
+        },
+      };
+
+      emitToGameSession(sessionId, "game:answer-updated", sharedUpdate);
 
       return res.status(200).json({
         success: true,
@@ -133,6 +157,8 @@ export const gameController = {
       }
 
       const result = await gameService.skipPuzzle(puzzleId);
+
+      emitToGameSession(result.sessionId, "game:puzzle-skipped", { puzzleId });
 
       return res.status(200).json({
         success: true,

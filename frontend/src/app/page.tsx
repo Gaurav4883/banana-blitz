@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import GameLobby, { type SharedAnswerUpdate } from "@/components/game-lobby";
 import {
   AnswerResult,
   GameSession,
@@ -8,8 +9,6 @@ import {
   SessionDetails,
   gameApi,
 } from "@/lib/api";
-
-import GameLobby from "@/components/game-lobby";
 
 type LoadingAction = "start" | "answer" | "skip" | "next" | null;
 
@@ -26,6 +25,49 @@ export default function Home() {
   const [error, setError] = useState("");
 
   const [joinSessionId, setJoinSessionId] = useState("");
+
+  const handleSharedPuzzle = useCallback((newPuzzle: Puzzle) => {
+    setPuzzle(newPuzzle);
+    setFeedback(null);
+    setAnswer("");
+    setError("");
+  }, []);
+
+  const handleSharedAnswer = useCallback((update: SharedAnswerUpdate) => {
+    setPuzzle((current) => {
+      if (!current || current.id !== update.puzzleId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        attemptsUsed: update.result.attemptsUsed,
+        status: update.puzzleStatus,
+      };
+    });
+
+    setFeedback(update.result);
+    setAnswer("");
+
+    setSession((current) =>
+      current
+        ? {
+            ...current,
+            score: update.session.score,
+            totalPuzzles: update.session.totalPuzzles,
+            solvedPuzzles: update.session.solvedPuzzles,
+          }
+        : current,
+    );
+  }, []);
+
+  const handleSharedSkip = useCallback((puzzleId: string) => {
+    setPuzzle((current) =>
+      current && current.id === puzzleId
+        ? { ...current, status: "SKIPPED" }
+        : current,
+    );
+  }, []);
 
   const joinExistingGame = async () => {
     const sessionId = joinSessionId.trim();
@@ -217,7 +259,14 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
-      {session && <GameLobby sessionId={session.id} />}
+      {session && (
+        <GameLobby
+          sessionId={session.id}
+          onPuzzleUpdated={handleSharedPuzzle}
+          onAnswerUpdated={handleSharedAnswer}
+          onPuzzleSkipped={handleSharedSkip}
+        />
+      )}
 
       <div className="mx-auto max-w-3xl">
         <header className="mb-10 text-center">

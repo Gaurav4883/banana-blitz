@@ -3,17 +3,53 @@
 import { useEffect, useState } from "react";
 import { socket } from "@/lib/socket";
 
-interface GameLobbyProps {
-  sessionId: string;
+import type { Puzzle, AnswerResult } from "@/lib/api";
+
+export interface SharedAnswerUpdate {
+  puzzleId: string;
+  result: AnswerResult;
+  puzzleStatus: Puzzle["status"];
+  session: {
+    id: string;
+    score: number;
+    totalPuzzles: number;
+    solvedPuzzles: number;
+  };
 }
 
-export default function GameLobby({ sessionId }: GameLobbyProps) {
+interface GameLobbyProps {
+  sessionId: string;
+  onPuzzleUpdated: (puzzle: Puzzle) => void;
+  onAnswerUpdated: (update: SharedAnswerUpdate) => void;
+  onPuzzleSkipped: (puzzleId: string) => void;
+}
+
+export default function GameLobby({
+  sessionId,
+  onPuzzleUpdated,
+  onAnswerUpdated,
+  onPuzzleSkipped,
+}: GameLobbyProps) {
   const [connected, setConnected] = useState(false);
   const [joined, setJoined] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
   const [notification, setNotification] = useState("");
 
   useEffect(() => {
+    const handlePuzzleUpdated = (data: Puzzle) => {
+      onPuzzleUpdated(data);
+      setNotification("A new puzzle is available.");
+    };
+
+    const handleAnswerUpdated = (data: SharedAnswerUpdate) => {
+      onAnswerUpdated(data);
+    };
+
+    const handlePuzzleSkipped = (data: { puzzleId: string }) => {
+      onPuzzleSkipped(data.puzzleId);
+      setNotification("The current puzzle was skipped.");
+    };
+
     setConnected(socket.connected);
     setJoined(false);
 
@@ -68,6 +104,9 @@ export default function GameLobby({ sessionId }: GameLobbyProps) {
     socket.on("game:player-count", handlePlayerCount);
     socket.on("game:player-joined", handlePlayerJoined);
     socket.on("game:player-left", handlePlayerLeft);
+    socket.on("game:puzzle-updated", handlePuzzleUpdated);
+    socket.on("game:answer-updated", handleAnswerUpdated);
+    socket.on("game:puzzle-skipped", handlePuzzleSkipped);
 
     if (socket.connected) {
       joinRoom();
@@ -85,6 +124,9 @@ export default function GameLobby({ sessionId }: GameLobbyProps) {
       socket.off("game:player-count", handlePlayerCount);
       socket.off("game:player-joined", handlePlayerJoined);
       socket.off("game:player-left", handlePlayerLeft);
+      socket.off("game:puzzle-updated", handlePuzzleUpdated);
+      socket.off("game:answer-updated", handleAnswerUpdated);
+      socket.off("game:puzzle-skipped", handlePuzzleSkipped);
 
       socket.disconnect();
     };
