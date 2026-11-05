@@ -1,109 +1,88 @@
+// AI-assisted (Claude, Anthropic): updated for BananaApiService, reviewed by me.
+// The old tests were for a BananaService class that kept puzzles in memory.
+// That got replaced by the database version, so these test what the service
+// does now: fetch + validate the external Banana API response.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BananaService } from "../src/modules/banana/banana.service";
+import { BananaApiService } from "../src/modules/banana/banana.service";
 
-describe("BananaService", () => {
+const IMAGE_URL = "https://www.sanfoh.com/uob/banana/data/test-puzzle.png";
+
+// fake fetch so the tests don't hit the real API (fast + no network needed)
+function mockBananaApi(body: string, status = 200) {
+  const mockFetch = vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => body,
+  });
+
+  vi.stubGlobal("fetch", mockFetch);
+  return mockFetch;
+}
+
+describe("BananaApiService.fetchPuzzle", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  function mockBananaApi(solution = 8) {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          question: "https://www.sanfoh.com/uob/banana/data/test-puzzle.png",
-          solution,
-        }),
-    });
+  it("returns the question URL and solution", async () => {
+    mockBananaApi(JSON.stringify({ question: IMAGE_URL, solution: 8 }));
 
-    vi.stubGlobal("fetch", mockFetch);
+    const puzzle = await new BananaApiService().fetchPuzzle();
 
-    return mockFetch;
-  }
+    expect(puzzle).toEqual({ question: IMAGE_URL, solution: 8 });
+  });
 
-  it("should generate a puzzle successfully", async () => {
-    mockBananaApi();
-
-    const service = new BananaService();
-
-    const puzzle = await service.generatePuzzle();
-
-    expect(puzzle.puzzleId).toBeDefined();
-
-    expect(puzzle.question).toBe(
-      "https://www.sanfoh.com/uob/banana/data/test-puzzle.png",
+  it("asks for JSON from the configured URL", async () => {
+    const mockFetch = mockBananaApi(
+      JSON.stringify({ question: IMAGE_URL, solution: 3 }),
     );
 
-    // The correct answer must never be exposed.
-    expect(puzzle).not.toHaveProperty("solution");
+    await new BananaApiService().fetchPuzzle();
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain("out=json");
+    expect(options.headers.Accept).toBe("application/json");
   });
 
-  it("should accept a correct answer", async () => {
-    mockBananaApi(8);
+  it("throws on a non-2xx response", async () => {
+    mockBananaApi("Service unavailable", 503);
 
-    const service = new BananaService();
-
-    const puzzle = await service.generatePuzzle();
-
-    const result = service.submitAnswer(puzzle.puzzleId, 8);
-
-    expect(result.correct).toBe(true);
-    expect(result.message).toBe("Correct answer! Well done.");
-    expect(result.remainingAttempts).toBe(9);
-  });
-
-  it("should reject an incorrect answer", async () => {
-    mockBananaApi(8);
-
-    const service = new BananaService();
-
-    const puzzle = await service.generatePuzzle();
-
-    const result = service.submitAnswer(puzzle.puzzleId, 5);
-
-    expect(result.correct).toBe(false);
-    expect(result.message).toBe("Incorrect answer. Try again!");
-    expect(result.remainingAttempts).toBe(9);
-  });
-
-  it("should reject a puzzle that does not exist", () => {
-    const service = new BananaService();
-
-    expect(() => {
-      service.submitAnswer("invalid-puzzle-id", 8);
-    }).toThrow("Puzzle not found or already completed");
-  });
-
-  it("should handle an unsuccessful Banana API response", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: async () => "Service unavailable",
-    });
-
-    vi.stubGlobal("fetch", mockFetch);
-
-    const service = new BananaService();
-
-    await expect(service.generatePuzzle()).rejects.toThrow(
+    await expect(new BananaApiService().fetchPuzzle()).rejects.toThrow(
       "Banana API returned HTTP 503",
     );
   });
 
-  it("should reject invalid JSON from the Banana API", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => "This is not valid JSON",
-    });
+  it("throws on invalid JSON", async () => {
+    mockBananaApi("This is not valid JSON");
 
-    vi.stubGlobal("fetch", mockFetch);
-
-    const service = new BananaService();
-
-    await expect(service.generatePuzzle()).rejects.toThrow(
+    await expect(new BananaApiService().fetchPuzzle()).rejects.toThrow(
       "Banana API returned invalid JSON",
+    );
+  });
+
+  it("throws when fields are missing", async () => {
+    mockBananaApi(JSON.stringify({ question: IMAGE_URL }));
+
+    await expect(new BananaApiService().fetchPuzzle()).rejects.toThrow(
+      "invalid structure",
+    );
+  });
+
+  it("throws when the solution isn't a number", async () => {
+    mockBananaApi(JSON.stringify({ question: IMAGE_URL, solution: "8" }));
+
+    await expect(new BananaApiService().fetchPuzzle()).rejects.toThrow(
+      "invalid puzzle data",
+    );
+  });
+
+  it("refuses a plain http image (mixed content / tampering)", async () => {
+    mockBananaApi(
+      JSON.stringify({ question: "http://example.com/a.png", solution: 1 }),
+    );
+
+    await expect(new BananaApiService().fetchPuzzle()).rejects.toThrow(
+      "non-HTTPS",
     );
   });
 });
