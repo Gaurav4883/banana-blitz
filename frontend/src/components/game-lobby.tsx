@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { socket } from "@/lib/socket";
 import PlayerStatsCard from "@/components/player-stats";
 
@@ -49,42 +49,66 @@ export default function GameLobby({
   const [copied, setCopied] = useState(false);
   // which player's stats are open in the list (click a name to toggle)
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
+  // start from the socket's real state instead of setting it in the effect
+  const [connected, setConnected] = useState(() => socket.connected);
   const [joined, setJoined] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
   const [notification, setNotification] = useState("");
 
+  // The socket listeners below are set up once per game. Keeping the
+  // callbacks in a ref means they always call the latest version from the
+  // page without having to unsubscribe and resubscribe every render.
+  const callbacks = useRef({
+    onPuzzleUpdated,
+    onAnswerUpdated,
+    onPuzzleSkipped,
+    onPlayersUpdated,
+    onGameFinished,
+    onConnectionChange,
+    onReconnected,
+  });
+
+  useEffect(() => {
+    callbacks.current = {
+      onPuzzleUpdated,
+      onAnswerUpdated,
+      onPuzzleSkipped,
+      onPlayersUpdated,
+      onGameFinished,
+      onConnectionChange,
+      onReconnected,
+    };
+  });
+
   useEffect(() => {
     const handlePuzzleUpdated = (data: Puzzle) => {
-      onPuzzleUpdated(data);
+      callbacks.current.onPuzzleUpdated(data);
       setNotification("A new puzzle is available.");
     };
 
     const handleAnswerUpdated = (data: SharedAnswerUpdate) => {
-      onAnswerUpdated(data);
+      callbacks.current.onAnswerUpdated(data);
     };
 
     const handlePuzzleSkipped = (data: {
       puzzleId: string;
       displayName?: string | null;
     }) => {
-      onPuzzleSkipped(data.puzzleId);
+      callbacks.current.onPuzzleSkipped(data.puzzleId);
       setNotification(`${data.displayName ?? "Someone"} skipped the puzzle.`);
     };
 
     const handlePlayers = (data: { sessionId: string; players: Player[] }) => {
-      if (data.sessionId === sessionId) onPlayersUpdated(data.players);
+      if (data.sessionId === sessionId)
+        callbacks.current.onPlayersUpdated(data.players);
     };
 
     const handleFinished = (data: { sessionId: string; players: Player[] }) => {
       if (data.sessionId === sessionId) {
-        onGameFinished(data.players);
+        callbacks.current.onGameFinished(data.players);
         setNotification("Game over!");
       }
     };
-
-    setConnected(socket.connected);
-    setJoined(false);
 
     // Socket.IO reconnects by itself, but the server forgets which rooms we
     // were in, so every (re)connect has to join the room again. If it's not
@@ -94,16 +118,16 @@ export default function GameLobby({
 
     const joinRoom = () => {
       setConnected(true);
-      onConnectionChange(true);
+      callbacks.current.onConnectionChange(true);
       socket.emit("game:join", { sessionId });
 
-      if (hasConnectedBefore) onReconnected();
+      if (hasConnectedBefore) callbacks.current.onReconnected();
       hasConnectedBefore = true;
     };
 
     const handleDisconnect = () => {
       setConnected(false);
-      onConnectionChange(false);
+      callbacks.current.onConnectionChange(false);
       setJoined(false);
       setPlayerCount(0);
     };

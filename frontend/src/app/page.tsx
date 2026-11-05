@@ -14,7 +14,6 @@ import {
   GameSession,
   Player,
   Puzzle,
-  SessionDetails,
   User,
   authApi,
   gameApi,
@@ -31,9 +30,6 @@ export default function Home() {
   const [showUpgrade, setShowUpgrade] = useState(false);
 
   const [session, setSession] = useState<GameSession | null>(null);
-  const [sessionDetails, setSessionDetails] = useState<SessionDetails | null>(
-    null,
-  );
   const [puzzle, setPuzzle] = useState<Puzzle | null>(null);
 
   const [answer, setAnswer] = useState("");
@@ -54,7 +50,6 @@ export default function Home() {
   // GameLobby sends game:leave so the others see you go offline.
   const leaveGame = () => {
     setSession(null);
-    setSessionDetails(null);
     setPlayers([]);
     setPuzzle(null);
     setFeedback(null);
@@ -72,7 +67,6 @@ export default function Home() {
 
     setUser(null);
     setSession(null);
-    setSessionDetails(null);
     setPlayers([]);
     setPuzzle(null);
     setFeedback(null);
@@ -172,7 +166,6 @@ export default function Home() {
     setFeedback(null);
     setPuzzle(null);
     setSession(null);
-    setSessionDetails(null);
 
     try {
       // join first, the server only lets players read a session
@@ -183,7 +176,6 @@ export default function Home() {
       }
 
       setSession(details);
-      setSessionDetails(details);
       setPlayers(details.players);
 
       const activePuzzle = details.puzzles.find(
@@ -207,7 +199,6 @@ export default function Home() {
 
   const refreshSession = async (sessionId: string) => {
     const details = await gameApi.getSession(sessionId);
-    setSessionDetails(details);
     // keep the online flags we got from the socket, REST doesn't know them
     setPlayers((current) =>
       details.players.map((player) => ({
@@ -234,7 +225,6 @@ export default function Home() {
     setAnswer("");
     setPuzzle(null);
     setSession(null);
-    setSessionDetails(null);
 
     try {
       const newSession = await gameApi.createSession(level);
@@ -703,6 +693,10 @@ export default function Home() {
                       </div>
 
                       <div className="overflow-hidden rounded-xl border border-slate-700 bg-white p-3">
+                        {/* plain <img> on purpose: the picture comes from the
+                            Banana API's server and changes every puzzle, so
+                            next/image optimising/caching it doesn't help */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={puzzle.questionUrl}
                           alt="Banana puzzle"
