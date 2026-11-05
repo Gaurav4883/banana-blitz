@@ -25,6 +25,14 @@ enum PuzzleStatus {
   SKIPPED
 }
 
+// Banana API has no difficulty option, so these are our own game rules
+// (time limit, guesses, points). See DIFFICULTY_SETTINGS in game.service.ts
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
 enum Role {
   PLAYER
   ADMIN
@@ -70,6 +78,10 @@ model GameSession {
   id     String            @id @default(cuid())
   userId String?
   status GameSessionStatus @default(ACTIVE)
+
+  difficulty     Difficulty @default(MEDIUM)
+  // race mode: game ends after this many puzzles, highest score wins
+  puzzlesPerGame Int        @default(5)
 
   score         Int @default(0)
   totalPuzzles  Int @default(0)
@@ -136,6 +148,8 @@ model PuzzleAttempt {
 
   @@unique([puzzleId, attemptNumber])
   @@index([puzzleId, createdAt])
+  // each player has their own guesses, we count them per puzzle per user
+  @@index([puzzleId, userId])
 }
 
 model AuthSession {

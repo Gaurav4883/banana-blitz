@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { socket } from "@/lib/socket";
+import PlayerStatsCard from "@/components/player-stats";
 
 import type { Puzzle, AnswerResult, Player } from "@/lib/api";
 
@@ -24,6 +25,7 @@ interface GameLobbyProps {
   onAnswerUpdated: (update: SharedAnswerUpdate) => void;
   onPuzzleSkipped: (puzzleId: string) => void;
   onPlayersUpdated: (players: Player[]) => void;
+  onGameFinished: (players: Player[]) => void;
   players: Player[];
   currentUserId: string;
 }
@@ -34,10 +36,13 @@ export default function GameLobby({
   onAnswerUpdated,
   onPuzzleSkipped,
   onPlayersUpdated,
+  onGameFinished,
   players,
   currentUserId,
 }: GameLobbyProps) {
   const [copied, setCopied] = useState(false);
+  // which player's stats are open in the list (click a name to toggle)
+  const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [joined, setJoined] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
@@ -63,6 +68,13 @@ export default function GameLobby({
 
     const handlePlayers = (data: { sessionId: string; players: Player[] }) => {
       if (data.sessionId === sessionId) onPlayersUpdated(data.players);
+    };
+
+    const handleFinished = (data: { sessionId: string; players: Player[] }) => {
+      if (data.sessionId === sessionId) {
+        onGameFinished(data.players);
+        setNotification("Game over!");
+      }
     };
 
     setConnected(socket.connected);
@@ -140,6 +152,7 @@ export default function GameLobby({
     socket.on("game:answer-updated", handleAnswerUpdated);
     socket.on("game:puzzle-skipped", handlePuzzleSkipped);
     socket.on("game:players", handlePlayers);
+    socket.on("game:finished", handleFinished);
 
     if (socket.connected) {
       joinRoom();
@@ -162,6 +175,7 @@ export default function GameLobby({
       socket.off("game:answer-updated", handleAnswerUpdated);
       socket.off("game:puzzle-skipped", handlePuzzleSkipped);
       socket.off("game:players", handlePlayers);
+      socket.off("game:finished", handleFinished);
 
       socket.disconnect();
     };
@@ -217,33 +231,46 @@ export default function GameLobby({
 
         <ul className="space-y-2">
           {players.map((player, index) => (
-            <li
-              key={player.userId}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2 ${
-                player.userId === currentUserId
-                  ? "bg-yellow-400/10 ring-1 ring-yellow-400/40"
-                  : "bg-slate-800"
-              }`}
-            >
-              <span className="w-4 text-xs text-slate-500">{index + 1}</span>
-              <span
-                title={player.online ? "Online" : "Away"}
-                className={`h-2 w-2 shrink-0 rounded-full ${
-                  player.online ? "bg-green-400" : "bg-slate-600"
+            <li key={player.userId}>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPlayer((current) =>
+                    current === player.userId ? null : player.userId,
+                  )
+                }
+                aria-expanded={selectedPlayer === player.userId}
+                title="Show player stats"
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition hover:brightness-125 ${
+                  player.userId === currentUserId
+                    ? "bg-yellow-400/10 ring-1 ring-yellow-400/40"
+                    : "bg-slate-800"
                 }`}
-              />
-              <span className="min-w-0 flex-1 truncate text-sm text-white">
-                {player.displayName ?? "Player"}
-                {player.userId === currentUserId && (
-                  <span className="text-slate-400"> (you)</span>
-                )}
-                {player.isGuest && (
-                  <span className="ml-1 text-xs text-slate-500">guest</span>
-                )}
-              </span>
-              <span className="text-sm font-bold text-yellow-400">
-                {player.score}
-              </span>
+              >
+                <span className="w-4 text-xs text-slate-500">{index + 1}</span>
+                <span
+                  title={player.online ? "Online" : "Away"}
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    player.online ? "bg-green-400" : "bg-slate-600"
+                  }`}
+                />
+                <span className="min-w-0 flex-1 truncate text-sm text-white">
+                  {player.displayName ?? "Player"}
+                  {player.userId === currentUserId && (
+                    <span className="text-slate-400"> (you)</span>
+                  )}
+                  {player.isGuest && (
+                    <span className="ml-1 text-xs text-slate-500">guest</span>
+                  )}
+                </span>
+                <span className="text-sm font-bold text-yellow-400">
+                  {player.score}
+                </span>
+              </button>
+
+              {selectedPlayer === player.userId && (
+                <PlayerStatsCard userId={player.userId} compact />
+              )}
             </li>
           ))}
         </ul>

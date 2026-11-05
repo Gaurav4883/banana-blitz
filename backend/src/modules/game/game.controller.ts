@@ -1,6 +1,23 @@
 import { Request, Response } from "express";
 import { gameService } from "./game.service";
-import { emitPlayers, emitToGameSession } from "../../socket/socket";
+import {
+  emitGameFinished,
+  emitLeaderboardChanged,
+  emitPlayers,
+  emitToGameSession,
+} from "../../socket/socket";
+
+// If an action ended the game (e.g. the last puzzle expired) the error is
+// GAME_FINISHED, tell the room so everyone gets the results screen.
+function announceIfFinished(sessionId: string | undefined, error: unknown) {
+  if (
+    sessionId &&
+    error instanceof Error &&
+    error.message === "GAME_FINISHED"
+  ) {
+    void emitGameFinished(sessionId);
+  }
+}
 
 function sendError(res: Response, error: unknown) {
   const code = error instanceof Error ? error.message : "INTERNAL_ERROR";
@@ -38,6 +55,14 @@ function sendError(res: Response, error: unknown) {
       status: 403,
       message: "You are not a player in this game. Join it first.",
     },
+    INVALID_DIFFICULTY: {
+      status: 400,
+      message: "Difficulty must be EASY, MEDIUM or HARD",
+    },
+    GAME_FINISHED: {
+      status: 409,
+      message: "This game is over",
+    },
     GAME_CONFLICT: {
       status: 409,
       message: "The game was updated by another player. Please try again.",
@@ -65,7 +90,10 @@ export const gameController = {
   async createSession(req: Request, res: Response) {
     try {
       // requireAuth runs before this so req.user is always set here
-      const session = await gameService.createSession(req.user!.id);
+      const session = await gameService.createSession(
+        req.user!.id,
+        req.body?.difficulty ?? "MEDIUM",
+      );
 
       return res.status(201).json({
         success: true,
@@ -78,9 +106,9 @@ export const gameController = {
   },
 
   async createPuzzle(req: Request, res: Response) {
-    try {
-      const sessionId = req.params.sessionId as string;
+    const sessionId = req.params.sessionId as string;
 
+    try {
       if (!sessionId) {
         return res.status(400).json({
           success: false,
@@ -91,17 +119,26 @@ export const gameController = {
       const puzzle = await gameService.createPuzzle(sessionId, req.user!.id);
       emitToGameSession(sessionId, "game:puzzle-updated", puzzle);
 
+      // might be an existing puzzle the player already guessed on
+      const myAttemptsUsed = await gameService.countMyAttempts(
+        puzzle.id,
+        req.user!.id,
+      );
+
       return res.status(201).json({
         success: true,
         message: "Puzzle generated",
-        data: puzzle,
+        data: { ...puzzle, myAttemptsUsed },
       });
     } catch (error) {
+      announceIfFinished(sessionId, error);
       return sendError(res, error);
     }
   },
 
   async submitAnswer(req: Request, res: Response) {
+    let sessionId: string | undefined;
+
     try {
       const puzzleId = req.params.puzzleId as string;
       const { answer } = req.body as { answer?: unknown };
@@ -121,20 +158,14 @@ export const gameController = {
       }
 
       const userId = req.user!.id;
-      const sessionId = await gameService.getPuzzleSessionId(puzzleId);
+      sessionId = await gameService.getPuzzleSessionId(puzzleId);
       const result = await gameService.submitAnswer(puzzleId, answer, userId);
       const session = await gameService.getSession(sessionId, userId);
-
-      const puzzleStatus = result.correct
-        ? "SOLVED"
-        : result.attemptsRemaining === 0
-          ? "FAILED"
-          : "ACTIVE";
 
       const sharedUpdate = {
         puzzleId,
         result,
-        puzzleStatus,
+        puzzleStatus: result.puzzleStatus,
         // who answered, so the other browsers don't show "you scored"
         player: { userId, displayName: req.user!.displayName },
         session: {
@@ -146,7 +177,11 @@ export const gameController = {
       };
 
       emitToGameSession(sessionId, "game:answer-updated", sharedUpdate);
-      if (result.correct) void emitPlayers(sessionId);
+      if (result.correct) {
+        void emitPlayers(sessionId);
+        emitLeaderboardChanged();
+      }
+      if (result.gameFinished) void emitGameFinished(sessionId);
 
       return res.status(200).json({
         success: true,
@@ -154,11 +189,14 @@ export const gameController = {
         data: result,
       });
     } catch (error) {
+      announceIfFinished(sessionId, error);
       return sendError(res, error);
     }
   },
 
   async skipPuzzle(req: Request, res: Response) {
+    let sessionId: string | undefined;
+
     try {
       const puzzleId = req.params.puzzleId as string;
 
@@ -169,12 +207,14 @@ export const gameController = {
         });
       }
 
+      sessionId = await gameService.getPuzzleSessionId(puzzleId);
       const result = await gameService.skipPuzzle(puzzleId, req.user!.id);
 
       emitToGameSession(result.sessionId, "game:puzzle-skipped", {
         puzzleId,
         displayName: req.user!.displayName,
       });
+      if (result.gameFinished) void emitGameFinished(result.sessionId);
 
       return res.status(200).json({
         success: true,
@@ -182,6 +222,7 @@ export const gameController = {
         data: result,
       });
     } catch (error) {
+      announceIfFinished(sessionId, error);
       return sendError(res, error);
     }
   },

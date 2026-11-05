@@ -1,11 +1,65 @@
-import { GameSessionStatus, Prisma, PuzzleStatus } from "@prisma/client";
+import {
+  Difficulty,
+  GameSessionStatus,
+  Prisma,
+  PuzzleStatus,
+} from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { bananaApiService } from "../banana/banana.service";
 
-const PUZZLE_TIME_LIMIT_MS = 15 * 60 * 1000;
-const MAX_ATTEMPTS = 10;
-const POINTS_PER_CORRECT_ANSWER = 100;
 const MAX_TRANSACTION_RETRIES = 3;
+
+// AI-assisted (Claude, Anthropic): race mode rules below, reviewed by me.
+
+// The Banana API has no difficulty setting (checked the docs) so difficulty
+// is our own rules: harder = less time, fewer guesses, more points.
+export const DIFFICULTY_SETTINGS: Record<
+  Difficulty,
+  { timeLimitMs: number; maxAttempts: number; points: number }
+> = {
+  EASY: { timeLimitMs: 5 * 60 * 1000, maxAttempts: 10, points: 100 },
+  MEDIUM: { timeLimitMs: 3 * 60 * 1000, maxAttempts: 5, points: 200 },
+  HARD: { timeLimitMs: 90 * 1000, maxAttempts: 3, points: 400 },
+};
+
+// Race mode: a game is this many puzzles, then the highest score wins.
+const PUZZLES_PER_GAME = 5;
+
+// Solve within 30s for a speed bonus of up to +50%, going down to 0 at 30s.
+const SPEED_BONUS_WINDOW_MS = 30 * 1000;
+const MAX_SPEED_BONUS = 0.5;
+
+export function calculatePoints(basePoints: number, elapsedMs: number) {
+  const timeLeft = Math.max(0, SPEED_BONUS_WINDOW_MS - Math.max(0, elapsedMs));
+  const bonus = Math.round(
+    basePoints * MAX_SPEED_BONUS * (timeLeft / SPEED_BONUS_WINDOW_MS),
+  );
+
+  return { base: basePoints, bonus, total: basePoints + bonus };
+}
+
+const sessionSelect = {
+  id: true,
+  status: true,
+  difficulty: true,
+  puzzlesPerGame: true,
+  score: true,
+  totalPuzzles: true,
+  solvedPuzzles: true,
+  startedAt: true,
+  completedAt: true,
+} as const;
+
+const puzzleSelect = {
+  id: true,
+  questionUrl: true,
+  status: true,
+  maxAttempts: true,
+  attemptsUsed: true,
+  expiresAt: true,
+  createdAt: true,
+  // Never select the solution for a client-facing response.
+} as const;
 
 export class GameService {
   /**
@@ -125,24 +179,106 @@ export class GameService {
     return this.getSession(sessionId, userId);
   }
 
-  async createSession(userId: string) {
+  async createSession(userId: string, difficulty: unknown = "MEDIUM") {
+    if (
+      typeof difficulty !== "string" ||
+      !Object.values(Difficulty).includes(difficulty as Difficulty)
+    ) {
+      throw new Error("INVALID_DIFFICULTY");
+    }
+
     return prisma.gameSession.create({
       data: {
         status: GameSessionStatus.ACTIVE,
+        difficulty: difficulty as Difficulty,
+        puzzlesPerGame: PUZZLES_PER_GAME,
         // the player who created the game (host)
         userId,
         // and the host is also the first player
         players: { create: { userId } },
       },
+      select: sessionSelect,
+    });
+  }
+
+  /**
+   * Race mode: once the last puzzle of the game is over (solved, failed,
+   * skipped or expired) the session is marked COMPLETED. Runs inside the
+   * same transaction that ended the puzzle so it can't happen twice.
+   */
+  private async finishIfLastPuzzle(
+    tx: Prisma.TransactionClient,
+    sessionId: string,
+  ): Promise<boolean> {
+    const session = await tx.gameSession.findUnique({
+      where: { id: sessionId },
+      select: { status: true, totalPuzzles: true, puzzlesPerGame: true },
+    });
+
+    if (
+      !session ||
+      session.status !== GameSessionStatus.ACTIVE ||
+      session.totalPuzzles < session.puzzlesPerGame
+    ) {
+      return false;
+    }
+
+    await tx.gameSession.update({
+      where: { id: sessionId },
+      data: { status: GameSessionStatus.COMPLETED, completedAt: new Date() },
+    });
+
+    return true;
+  }
+
+  /**
+   * Checks the session is playable, marks old puzzles EXPIRED and returns
+   * the current active puzzle if there is one. Used twice by createPuzzle.
+   */
+  private async loadActivePuzzle(
+    tx: Prisma.TransactionClient,
+    sessionId: string,
+  ) {
+    const session = await tx.gameSession.findUnique({
+      where: { id: sessionId },
       select: {
-        id: true,
         status: true,
-        score: true,
+        difficulty: true,
         totalPuzzles: true,
-        solvedPuzzles: true,
-        startedAt: true,
+        puzzlesPerGame: true,
       },
     });
+
+    if (!session) {
+      throw new Error("GAME_SESSION_NOT_FOUND");
+    }
+
+    if (session.status !== GameSessionStatus.ACTIVE) {
+      throw new Error("GAME_SESSION_NOT_ACTIVE");
+    }
+
+    const now = new Date();
+
+    await tx.puzzle.updateMany({
+      where: {
+        gameSessionId: sessionId,
+        status: PuzzleStatus.ACTIVE,
+        expiresAt: { lte: now },
+      },
+      data: { status: PuzzleStatus.EXPIRED },
+    });
+
+    const active = await tx.puzzle.findFirst({
+      where: {
+        gameSessionId: sessionId,
+        status: PuzzleStatus.ACTIVE,
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: "desc" },
+      select: puzzleSelect,
+    });
+
+    return { session, active };
   }
 
   async createPuzzle(sessionId: string, userId: string) {
@@ -150,57 +286,25 @@ export class GameService {
 
     /*
      * First check whether a usable active puzzle already exists.
-     * Expired ACTIVE puzzles are marked EXPIRED before checking.
+     * If every puzzle of the game has been used (the last one just
+     * expired) the game is over instead.
      */
-    const existingPuzzle = await this.runSerializableTransaction(async (tx) => {
-      const session = await tx.gameSession.findUnique({
-        where: { id: sessionId },
-        select: { id: true, status: true },
-      });
+    const existing = await this.runSerializableTransaction(async (tx) => {
+      const { session, active } = await this.loadActivePuzzle(tx, sessionId);
 
-      if (!session) {
-        throw new Error("GAME_SESSION_NOT_FOUND");
+      if (active) return active;
+
+      if (session.totalPuzzles >= session.puzzlesPerGame) {
+        await this.finishIfLastPuzzle(tx, sessionId);
+        return "FINISHED" as const;
       }
 
-      if (session.status !== GameSessionStatus.ACTIVE) {
-        throw new Error("GAME_SESSION_NOT_ACTIVE");
-      }
-
-      const now = new Date();
-
-      await tx.puzzle.updateMany({
-        where: {
-          gameSessionId: sessionId,
-          status: PuzzleStatus.ACTIVE,
-          expiresAt: { lte: now },
-        },
-        data: {
-          status: PuzzleStatus.EXPIRED,
-        },
-      });
-
-      return tx.puzzle.findFirst({
-        where: {
-          gameSessionId: sessionId,
-          status: PuzzleStatus.ACTIVE,
-          expiresAt: { gt: now },
-        },
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          questionUrl: true,
-          status: true,
-          maxAttempts: true,
-          attemptsUsed: true,
-          expiresAt: true,
-          createdAt: true,
-        },
-      });
+      return null;
     });
 
-    if (existingPuzzle) {
-      return existingPuzzle;
-    }
+    // thrown after the transaction so the COMPLETED status is saved
+    if (existing === "FINISHED") throw new Error("GAME_FINISHED");
+    if (existing) return existing;
 
     /*
      * Fetch from the external Banana API outside the database transaction.
@@ -215,83 +319,46 @@ export class GameService {
      * If two transactions conflict, runSerializableTransaction retries.
      * The retry will find and reuse the puzzle created by the other player.
      */
-    return this.runSerializableTransaction(async (tx) => {
-      const session = await tx.gameSession.findUnique({
-        where: { id: sessionId },
-        select: { id: true, status: true },
-      });
+    const created = await this.runSerializableTransaction(async (tx) => {
+      const { session, active } = await this.loadActivePuzzle(tx, sessionId);
 
-      if (!session) {
-        throw new Error("GAME_SESSION_NOT_FOUND");
+      if (active) return active;
+
+      if (session.totalPuzzles >= session.puzzlesPerGame) {
+        await this.finishIfLastPuzzle(tx, sessionId);
+        return "FINISHED" as const;
       }
 
-      if (session.status !== GameSessionStatus.ACTIVE) {
-        throw new Error("GAME_SESSION_NOT_ACTIVE");
-      }
-
-      const now = new Date();
-
-      await tx.puzzle.updateMany({
-        where: {
-          gameSessionId: sessionId,
-          status: PuzzleStatus.ACTIVE,
-          expiresAt: { lte: now },
-        },
-        data: {
-          status: PuzzleStatus.EXPIRED,
-        },
-      });
-
-      const activePuzzle = await tx.puzzle.findFirst({
-        where: {
-          gameSessionId: sessionId,
-          status: PuzzleStatus.ACTIVE,
-          expiresAt: { gt: now },
-        },
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          questionUrl: true,
-          status: true,
-          maxAttempts: true,
-          attemptsUsed: true,
-          expiresAt: true,
-          createdAt: true,
-        },
-      });
-
-      if (activePuzzle) {
-        return activePuzzle;
-      }
+      const settings = DIFFICULTY_SETTINGS[session.difficulty];
 
       const puzzle = await tx.puzzle.create({
         data: {
           gameSessionId: sessionId,
           questionUrl: puzzleData.question,
           solution: puzzleData.solution,
-          maxAttempts: MAX_ATTEMPTS,
-          expiresAt: new Date(Date.now() + PUZZLE_TIME_LIMIT_MS),
+          // per player, not shared (race mode)
+          maxAttempts: settings.maxAttempts,
+          expiresAt: new Date(Date.now() + settings.timeLimitMs),
         },
-        select: {
-          id: true,
-          questionUrl: true,
-          status: true,
-          maxAttempts: true,
-          attemptsUsed: true,
-          expiresAt: true,
-          createdAt: true,
-        },
+        select: puzzleSelect,
       });
 
       await tx.gameSession.update({
         where: { id: sessionId },
-        data: {
-          totalPuzzles: { increment: 1 },
-        },
+        data: { totalPuzzles: { increment: 1 } },
       });
 
       return puzzle;
     });
+
+    if (created === "FINISHED") throw new Error("GAME_FINISHED");
+
+    return created;
+  }
+
+  /** How many guesses this player has used on this puzzle. */
+  async countMyAttempts(puzzleId: string, userId: string) {
+    return prisma.puzzleAttempt.count({ where: { puzzleId, userId } });
   }
 
   async submitAnswer(puzzleId: string, answer: number, userId: string) {
@@ -324,16 +391,15 @@ export class GameService {
         });
 
         // Return so that the expiration update is committed.
-        return { expired: true as const };
-      }
-
-      if (puzzle.attemptsUsed >= puzzle.maxAttempts) {
-        throw new Error("NO_ATTEMPTS_REMAINING");
+        return {
+          expired: true as const,
+          gameFinished: await this.finishIfLastPuzzle(tx, puzzle.gameSessionId),
+        };
       }
 
       const session = await tx.gameSession.findUnique({
         where: { id: puzzle.gameSessionId },
-        select: { status: true },
+        select: { status: true, difficulty: true },
       });
 
       if (!session) {
@@ -344,9 +410,21 @@ export class GameService {
         throw new Error("GAME_SESSION_NOT_ACTIVE");
       }
 
+      // Race mode: every player gets their own guesses on each puzzle, so
+      // one person guessing wrong doesn't use up everyone else's tries.
+      const myAttempts = await tx.puzzleAttempt.count({
+        where: { puzzleId, userId },
+      });
+
+      if (myAttempts >= puzzle.maxAttempts) {
+        throw new Error("NO_ATTEMPTS_REMAINING");
+      }
+
       const isCorrect = answer === puzzle.solution;
+      // attemptNumber still counts all guesses on the puzzle (unique index)
       const attemptNumber = puzzle.attemptsUsed + 1;
-      const attemptsRemaining = puzzle.maxAttempts - attemptNumber;
+      const myAttemptsUsed = myAttempts + 1;
+      const attemptsRemaining = puzzle.maxAttempts - myAttemptsUsed;
 
       await tx.puzzleAttempt.create({
         data: {
@@ -359,6 +437,11 @@ export class GameService {
       });
 
       if (isCorrect) {
+        const points = calculatePoints(
+          DIFFICULTY_SETTINGS[session.difficulty].points,
+          now.getTime() - puzzle.createdAt.getTime(),
+        );
+
         await tx.puzzle.update({
           where: { id: puzzleId },
           data: {
@@ -371,22 +454,25 @@ export class GameService {
         await tx.gameSession.update({
           where: { id: puzzle.gameSessionId },
           data: {
-            score: { increment: POINTS_PER_CORRECT_ANSWER },
+            score: { increment: points.total },
             solvedPuzzles: { increment: 1 },
           },
         });
 
         /*
-         * Scoring rule: the session score is the TEAM total (everyone sees
-         * it go up), but the personal points only go to the player who
-         * actually solved it. Same transaction so the two can't disagree.
+         * Only the player who solved it first gets the points (that's the
+         * race). GameSession.score is just the total of everyone's points.
+         * Same transaction so the two can't disagree.
          */
         await tx.sessionPlayer.update({
           where: {
-            gameSessionId_userId: { gameSessionId: puzzle.gameSessionId, userId },
+            gameSessionId_userId: {
+              gameSessionId: puzzle.gameSessionId,
+              userId,
+            },
           },
           data: {
-            score: { increment: POINTS_PER_CORRECT_ANSWER },
+            score: { increment: points.total },
             solvedCount: { increment: 1 },
           },
         });
@@ -395,36 +481,62 @@ export class GameService {
           expired: false as const,
           correct: true,
           message: "Correct answer!",
-          attemptsUsed: attemptNumber,
+          attemptsUsed: myAttemptsUsed,
           attemptsRemaining,
-          pointsAwarded: POINTS_PER_CORRECT_ANSWER,
+          pointsAwarded: points.total,
+          speedBonus: points.bonus,
+          puzzleStatus: PuzzleStatus.SOLVED,
+          gameFinished: await this.finishIfLastPuzzle(tx, puzzle.gameSessionId),
         };
       }
 
-      const hasNoAttemptsLeft = attemptsRemaining <= 0;
+      // The puzzle only fails once EVERY player has used all their guesses.
+      const [playerCount, guessesPerPlayer] = await Promise.all([
+        tx.sessionPlayer.count({
+          where: { gameSessionId: puzzle.gameSessionId },
+        }),
+        tx.puzzleAttempt.groupBy({
+          by: ["userId"],
+          where: { puzzleId, userId: { not: null } },
+          _count: { _all: true },
+        }),
+      ]);
+
+      const playersOut = guessesPerPlayer.filter(
+        (row) => row._count._all >= puzzle.maxAttempts,
+      ).length;
+      const everyoneOut = playersOut >= playerCount;
 
       await tx.puzzle.update({
         where: { id: puzzleId },
         data: {
           attemptsUsed: attemptNumber,
-          status: hasNoAttemptsLeft ? PuzzleStatus.FAILED : PuzzleStatus.ACTIVE,
+          status: everyoneOut ? PuzzleStatus.FAILED : PuzzleStatus.ACTIVE,
         },
       });
 
       return {
         expired: false as const,
         correct: false,
-        message: hasNoAttemptsLeft
-          ? "No attempts remaining. This puzzle has ended."
-          : "Incorrect answer. Try again.",
-        attemptsUsed: attemptNumber,
+        message:
+          attemptsRemaining > 0
+            ? "Incorrect answer. Try again."
+            : everyoneOut
+              ? "No attempts remaining. This puzzle has ended."
+              : "Out of guesses for this one. Waiting for the others...",
+        attemptsUsed: myAttemptsUsed,
         attemptsRemaining,
         pointsAwarded: 0,
+        speedBonus: 0,
+        puzzleStatus: everyoneOut ? PuzzleStatus.FAILED : PuzzleStatus.ACTIVE,
+        gameFinished: everyoneOut
+          ? await this.finishIfLastPuzzle(tx, puzzle.gameSessionId)
+          : false,
       };
     });
 
     if (result.expired) {
-      throw new Error("PUZZLE_EXPIRED");
+      throw new Error(result.gameFinished ? "GAME_FINISHED" : "PUZZLE_EXPIRED");
     }
 
     return result;
@@ -452,29 +564,25 @@ export class GameService {
         throw new Error("PUZZLE_NOT_ACTIVE");
       }
 
-      if (new Date() >= puzzle.expiresAt) {
-        await tx.puzzle.update({
-          where: { id: puzzleId },
-          data: { status: PuzzleStatus.EXPIRED },
-        });
-
-        return { expired: true as const };
-      }
+      const expired = new Date() >= puzzle.expiresAt;
 
       await tx.puzzle.update({
         where: { id: puzzleId },
-        data: { status: PuzzleStatus.SKIPPED },
+        data: {
+          status: expired ? PuzzleStatus.EXPIRED : PuzzleStatus.SKIPPED,
+        },
       });
 
       return {
-        expired: false as const,
+        expired,
         message: "Puzzle skipped",
         sessionId: puzzle.gameSessionId,
+        gameFinished: await this.finishIfLastPuzzle(tx, puzzle.gameSessionId),
       };
     });
 
     if (result.expired) {
-      throw new Error("PUZZLE_EXPIRED");
+      throw new Error(result.gameFinished ? "GAME_FINISHED" : "PUZZLE_EXPIRED");
     }
 
     return result;
@@ -505,24 +613,13 @@ export class GameService {
     const session = await prisma.gameSession.findUnique({
       where: { id: sessionId },
       select: {
-        id: true,
-        status: true,
-        score: true,
-        totalPuzzles: true,
-        solvedPuzzles: true,
-        startedAt: true,
-        completedAt: true,
+        ...sessionSelect,
         puzzles: {
           orderBy: { createdAt: "desc" },
           select: {
-            id: true,
-            questionUrl: true,
-            status: true,
-            attemptsUsed: true,
-            maxAttempts: true,
-            expiresAt: true,
-            createdAt: true,
-            // Never select the solution for a client-facing response.
+            ...puzzleSelect,
+            // how many guesses *this* player made (race mode, per player)
+            _count: { select: { attempts: { where: { userId } } } },
           },
         },
       },
@@ -532,7 +629,14 @@ export class GameService {
       throw new Error("GAME_SESSION_NOT_FOUND");
     }
 
-    return { ...session, players: await this.getPlayers(sessionId) };
+    return {
+      ...session,
+      puzzles: session.puzzles.map(({ _count, ...puzzle }) => ({
+        ...puzzle,
+        myAttemptsUsed: _count.attempts,
+      })),
+      players: await this.getPlayers(sessionId),
+    };
   }
 }
 

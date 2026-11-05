@@ -4,8 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import GameLobby, { type SharedAnswerUpdate } from "@/components/game-lobby";
 import AuthPanel from "@/components/auth-panel";
 import VerifyEmailBanner from "@/components/verify-email-banner";
+import Leaderboard from "@/components/leaderboard";
+import PlayerStatsCard from "@/components/player-stats";
+import RaceResults from "@/components/race-results";
 import {
   AnswerResult,
+  DIFFICULTIES,
+  Difficulty,
   GameSession,
   Player,
   Puzzle,
@@ -38,6 +43,9 @@ export default function Home() {
   const [error, setError] = useState("");
 
   const [joinSessionId, setJoinSessionId] = useState("");
+  const [difficulty, setDifficulty] = useState<Difficulty>("MEDIUM");
+
+  const gameOver = session?.status === "COMPLETED";
 
   // On page load ask the API who we are. The cookie is httpOnly so the
   // browser JS can't read it directly, this is the only way to know.
@@ -48,6 +56,20 @@ export default function Home() {
       .catch(() => setUser(null))
       .finally(() => setCheckingAuth(false));
   }, []);
+
+  // Back to the dashboard (stats + leaderboard). You stay a player of the
+  // game, so you can rejoin later with the same invite code. Unmounting
+  // GameLobby sends game:leave so the others see you go offline.
+  const leaveGame = () => {
+    setSession(null);
+    setSessionDetails(null);
+    setPlayers([]);
+    setPuzzle(null);
+    setFeedback(null);
+    setAnswer("");
+    setError("");
+    setJoinSessionId("");
+  };
 
   const signOut = async () => {
     try {
@@ -67,7 +89,13 @@ export default function Home() {
   };
 
   const handleSharedPuzzle = useCallback((newPuzzle: Puzzle) => {
-    setPuzzle(newPuzzle);
+    // the broadcast doesn't know my guess count. Same puzzle = keep mine,
+    // new puzzle = I haven't guessed yet
+    setPuzzle((current) => ({
+      ...newPuzzle,
+      myAttemptsUsed:
+        current?.id === newPuzzle.id ? (current.myAttemptsUsed ?? 0) : 0,
+    }));
     setFeedback(null);
     setAnswer("");
     setError("");
@@ -80,16 +108,17 @@ export default function Home() {
           return current;
         }
 
-        return {
-          ...current,
-          attemptsUsed: update.result.attemptsUsed,
-          status: update.puzzleStatus,
-        };
+        // only the status, other people's guesses don't touch my count
+        return { ...current, status: update.puzzleStatus };
       });
 
       // Every browser in the room gets this event, including the one that
       // answered. Only say "you" if it was actually us.
       const fromSomeoneElse = update.player.userId !== user?.id;
+
+      // Someone else's wrong guess is just noise in a race, don't cover up
+      // my own feedback with it. Show it when they win or the puzzle ends.
+      if (fromSomeoneElse && update.puzzleStatus === "ACTIVE") return;
 
       setFeedback({
         ...update.result,
@@ -114,6 +143,13 @@ export default function Home() {
     },
     [user?.id],
   );
+
+  const handleGameFinished = useCallback((finalPlayers: Player[]) => {
+    setPlayers(finalPlayers);
+    setSession((current) =>
+      current ? { ...current, status: "COMPLETED" } : current,
+    );
+  }, []);
 
   const handleSharedSkip = useCallback((puzzleId: string) => {
     setPuzzle((current) =>
@@ -146,15 +182,7 @@ export default function Home() {
         throw new Error("This game session is not active.");
       }
 
-      setSession({
-        id: details.id,
-        status: details.status,
-        score: details.score,
-        totalPuzzles: details.totalPuzzles,
-        solvedPuzzles: details.solvedPuzzles,
-        startedAt: details.startedAt,
-      });
-
+      setSession(details);
       setSessionDetails(details);
       setPlayers(details.players);
 
@@ -187,17 +215,19 @@ export default function Home() {
         online: current.find((p) => p.userId === player.userId)?.online,
       })),
     );
-    setSession({
-      id: details.id,
-      status: details.status,
-      score: details.score,
-      totalPuzzles: details.totalPuzzles,
-      solvedPuzzles: details.solvedPuzzles,
-      startedAt: details.startedAt,
-    });
+    setSession(details);
   };
 
-  const startGame = async () => {
+  // "game is over" / "not active" errors mean someone else finished it,
+  // reload so the results screen shows
+  const refreshIfOver = async (message: string) => {
+    if (session && /over|not active/i.test(message)) {
+      await refreshSession(session.id).catch(() => undefined);
+    }
+  };
+
+  // level is passed in for "Play again", setDifficulty wouldn't be applied yet
+  const startGame = async (level: Difficulty = difficulty) => {
     setLoading("start");
     setError("");
     setFeedback(null);
@@ -207,7 +237,7 @@ export default function Home() {
     setSessionDetails(null);
 
     try {
-      const newSession = await gameApi.createSession();
+      const newSession = await gameApi.createSession(level);
       setSession(newSession);
 
       const newPuzzle = await gameApi.createPuzzle(newSession.id);
@@ -234,9 +264,10 @@ export default function Home() {
       setPuzzle(newPuzzle);
       await refreshSession(session.id);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to load the next puzzle",
-      );
+      const message =
+        err instanceof Error ? err.message : "Unable to load the next puzzle";
+      setError(message);
+      await refreshIfOver(message);
     } finally {
       setLoading(null);
     }
@@ -266,12 +297,8 @@ export default function Home() {
         current
           ? {
               ...current,
-              attemptsUsed: result.attemptsUsed,
-              status: result.correct
-                ? "SOLVED"
-                : result.attemptsRemaining === 0
-                  ? "FAILED"
-                  : "ACTIVE",
+              myAttemptsUsed: result.attemptsUsed,
+              status: result.puzzleStatus,
             }
           : null,
       );
@@ -289,6 +316,7 @@ export default function Home() {
           current ? { ...current, status: "EXPIRED" } : null,
         );
       }
+      await refreshIfOver(message);
     } finally {
       setLoading(null);
     }
@@ -310,15 +338,21 @@ export default function Home() {
 
       await refreshSession(session.id);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to skip this puzzle",
-      );
+      const message =
+        err instanceof Error ? err.message : "Unable to skip this puzzle";
+      setError(message);
+      await refreshIfOver(message);
     } finally {
       setLoading(null);
     }
   };
 
   const isPuzzleFinished = puzzle !== null && puzzle.status !== "ACTIVE";
+  // puzzle still going for the others but I've used all my guesses
+  const iAmOutOfGuesses =
+    puzzle !== null &&
+    !isPuzzleFinished &&
+    (puzzle.myAttemptsUsed ?? 0) >= puzzle.maxAttempts;
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
@@ -363,6 +397,15 @@ export default function Home() {
             </p>
 
             <div className="flex gap-2">
+              {session && (
+                <button
+                  onClick={leaveGame}
+                  disabled={loading !== null}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  ← Dashboard
+                </button>
+              )}
               {user.isGuest && !showUpgrade && (
                 <button
                   onClick={() => setShowUpgrade(true)}
@@ -393,13 +436,34 @@ export default function Home() {
           <div className="min-w-0">
             {session && (
               <section className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <StatCard label="Team score" value={session.score} />
                 <StatCard
                   label="Your score"
                   value={players.find((p) => p.userId === user?.id)?.score ?? 0}
                 />
-                <StatCard label="Puzzles" value={session.totalPuzzles} />
-                <StatCard label="Solved" value={session.solvedPuzzles} />
+                {/* race position, ties share a place */}
+                <StatCard
+                  label="Position"
+                  value={`${
+                    1 +
+                    players.filter(
+                      (p) =>
+                        p.score >
+                        (players.find((me) => me.userId === user?.id)?.score ??
+                          0),
+                    ).length
+                  }/${players.length || 1}`}
+                />
+                <StatCard
+                  label="Puzzle"
+                  value={`${Math.min(session.totalPuzzles, session.puzzlesPerGame)}/${session.puzzlesPerGame}`}
+                />
+                <StatCard
+                  label="Level"
+                  value={
+                    DIFFICULTIES.find((d) => d.value === session.difficulty)
+                      ?.label ?? session.difficulty
+                  }
+                />
               </section>
             )}
 
@@ -431,12 +495,46 @@ export default function Home() {
                       <h2 className="text-2xl font-bold">Ready to play?</h2>
 
                       <p className="mt-2 text-slate-400">
-                        Create a new game or join an existing game.
+                        Race your friends: 5 puzzles, first correct answer takes
+                        the points, faster answers score more.
                       </p>
 
+                      <fieldset className="mt-7">
+                        <legend className="mb-2 text-sm font-medium text-slate-300">
+                          Difficulty
+                        </legend>
+                        <div className="grid grid-cols-3 gap-2">
+                          {DIFFICULTIES.map((level) => (
+                            <label
+                              key={level.value}
+                              className={`cursor-pointer rounded-xl border p-3 text-center transition ${
+                                difficulty === level.value
+                                  ? "border-yellow-400 bg-yellow-400/10"
+                                  : "border-slate-700 hover:border-slate-500"
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="difficulty"
+                                value={level.value}
+                                checked={difficulty === level.value}
+                                onChange={() => setDifficulty(level.value)}
+                                className="sr-only"
+                              />
+                              <span className="block font-bold">
+                                {level.label}
+                              </span>
+                              <span className="mt-1 block text-[11px] text-slate-400">
+                                {level.detail}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+
                       <button
-                        onClick={startGame}
-                        className="mt-7 w-full rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300"
+                        onClick={() => void startGame()}
+                        className="mt-4 w-full rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300"
                       >
                         Create New Game
                       </button>
@@ -480,7 +578,21 @@ export default function Home() {
                     <LoadingMessage message="Starting your game..." />
                   )}
 
-                  {session && !puzzle && loading !== "start" && (
+                  {session && gameOver && user && (
+                    <RaceResults
+                      players={players}
+                      currentUserId={user.id}
+                      busy={loading !== null}
+                      onPlayAgain={() => {
+                        // same level as the game that just ended
+                        setDifficulty(session.difficulty);
+                        void startGame(session.difficulty);
+                      }}
+                      onDashboard={leaveGame}
+                    />
+                  )}
+
+                  {session && !gameOver && !puzzle && loading !== "start" && (
                     <div className="py-10 text-center">
                       <p className="text-slate-300">
                         Your session has been created, but no puzzle is loaded.
@@ -495,7 +607,7 @@ export default function Home() {
                     </div>
                   )}
 
-                  {puzzle && (
+                  {puzzle && !gameOver && (
                     <div>
                       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
                         <div>
@@ -507,9 +619,25 @@ export default function Home() {
                           </p>
                         </div>
 
-                        <span className="rounded-full bg-slate-800 px-4 py-2 text-sm text-slate-300">
-                          Attempts: {puzzle.attemptsUsed}/{puzzle.maxAttempts}
-                        </span>
+                        <div className="flex flex-wrap gap-2">
+                          {!isPuzzleFinished && (
+                            <Countdown
+                              key={puzzle.id}
+                              expiresAt={puzzle.expiresAt}
+                              onExpired={() =>
+                                setPuzzle((current) =>
+                                  current?.id === puzzle.id
+                                    ? { ...current, status: "EXPIRED" }
+                                    : current,
+                                )
+                              }
+                            />
+                          )}
+                          <span className="rounded-full bg-slate-800 px-4 py-2 text-sm text-slate-300">
+                            Your guesses: {puzzle.myAttemptsUsed ?? 0}/
+                            {puzzle.maxAttempts}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="overflow-hidden rounded-xl border border-slate-700 bg-white p-3">
@@ -543,12 +671,14 @@ export default function Home() {
                           {feedback.correct && (
                             <p className="mt-1 text-sm">
                               {feedback.byName
-                                ? `+${feedback.pointsAwarded} to the team score.`
+                                ? `They got ${feedback.pointsAwarded} points.`
                                 : `You earned ${feedback.pointsAwarded} points!`}
+                              {feedback.speedBonus > 0 &&
+                                ` (includes +${feedback.speedBonus} speed bonus)`}
                             </p>
                           )}
 
-                          {!feedback.correct && (
+                          {!feedback.correct && !feedback.byName && (
                             <p className="mt-1 text-sm">
                               {feedback.attemptsRemaining} attempts remaining.
                             </p>
@@ -565,7 +695,12 @@ export default function Home() {
                         </div>
                       )}
 
-                      {!isPuzzleFinished ? (
+                      {iAmOutOfGuesses ? (
+                        <p className="mt-6 rounded-xl bg-slate-800 p-4 text-center text-sm text-slate-300">
+                          You&apos;re out of guesses for this puzzle. Waiting
+                          for the others to finish...
+                        </p>
+                      ) : !isPuzzleFinished ? (
                         <>
                           <form onSubmit={submitAnswer} className="mt-6">
                             <label
@@ -613,9 +748,9 @@ export default function Home() {
                         <div className="mt-6">
                           <p className="mb-4 text-center text-slate-300">
                             {puzzle.status === "SOLVED"
-                              ? "Well done! Ready for another puzzle?"
+                              ? "Puzzle solved! Ready for the next one?"
                               : puzzle.status === "FAILED"
-                                ? "This puzzle has ended. Try the next one!"
+                                ? "Nobody got it. Try the next one!"
                                 : puzzle.status === "EXPIRED"
                                   ? "This puzzle has expired. Let's try another!"
                                   : "This puzzle was skipped."}
@@ -627,6 +762,14 @@ export default function Home() {
                             className="w-full rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
                           >
                             {loading === "next" ? "Loading..." : "Next Puzzle"}
+                          </button>
+
+                          <button
+                            onClick={leaveGame}
+                            disabled={loading !== null}
+                            className="mt-3 w-full rounded-xl border border-slate-700 px-6 py-3 font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            Back to dashboard
                           </button>
                         </div>
                       )}
@@ -644,6 +787,7 @@ export default function Home() {
                 currentUserId={user.id}
                 players={players}
                 onPlayersUpdated={setPlayers}
+                onGameFinished={handleGameFinished}
                 onPuzzleUpdated={handleSharedPuzzle}
                 onAnswerUpdated={handleSharedAnswer}
                 onPuzzleSkipped={handleSharedSkip}
@@ -651,6 +795,19 @@ export default function Home() {
             </aside>
           )}
         </div>
+
+        {/* home screen extras, hidden during a game to keep the puzzle in view */}
+        {user && !session && !showUpgrade && (
+          <div className="mt-6 grid gap-6 md:grid-cols-2">
+            {/* key: refetch when the user changes (e.g. after verifying) */}
+            <PlayerStatsCard
+              key={`${user.id}-${user.emailVerifiedAt}`}
+              userId="me"
+              title="Your stats"
+            />
+            <Leaderboard currentUserId={user.id} />
+          </div>
+        )}
 
         <footer className="mt-10 text-center text-sm text-slate-600">
           Banana Blitz · Software for Enterprise Project
@@ -660,7 +817,47 @@ export default function Home() {
   );
 }
 
-function StatCard({ label, value }: { label: string; value: number }) {
+/** Ticks down to expiresAt. Goes red in the last 10 seconds. */
+function Countdown({
+  expiresAt,
+  onExpired,
+}: {
+  expiresAt: string;
+  onExpired: () => void;
+}) {
+  const end = new Date(expiresAt).getTime();
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, []);
+
+  const secondsLeft = Math.max(0, Math.ceil((end - now) / 1000));
+
+  useEffect(() => {
+    // only local, the server checks the time itself on the next action
+    if (secondsLeft === 0) onExpired();
+  }, [secondsLeft, onExpired]);
+
+  const minutes = Math.floor(secondsLeft / 60);
+  const seconds = String(secondsLeft % 60).padStart(2, "0");
+
+  return (
+    <span
+      role="timer"
+      className={`rounded-full px-4 py-2 text-sm font-bold tabular-nums ${
+        secondsLeft <= 10
+          ? "animate-pulse bg-red-950 text-red-300"
+          : "bg-slate-800 text-yellow-300"
+      }`}
+    >
+      ⏱ {minutes}:{seconds}
+    </span>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-center">
       <p className="text-xs font-medium uppercase tracking-wider text-slate-500">

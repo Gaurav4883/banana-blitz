@@ -7,6 +7,7 @@ import { prisma } from "./config/prisma";
 
 import gameRoutes from "./modules/game/game.routes";
 import authRoutes from "./modules/auth/auth.routes";
+import playersRoutes from "./modules/players/players.routes";
 import { loadUser, requireAuth } from "./modules/auth/auth.middleware";
 import { createServer } from "http";
 import { initializeSocket } from "./socket/socket";
@@ -15,7 +16,7 @@ dotenv.config();
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 4000;
+const PORT = Number(process.env.PORT) || 5000;
 
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 
@@ -62,6 +63,9 @@ app.get("/api/v1/health", async (_req, res) => {
 app.use("/api/v1/auth", authRoutes);
 // every game route needs a player now (guest or account)
 app.use("/api/v1/game", requireAuth, gameRoutes);
+// stats only show display names and numbers (no emails), but still need a
+// signed in player so the API isn't open to scraping
+app.use("/api/v1/players", requireAuth, playersRoutes);
 
 const httpServer = createServer(app);
 const io = initializeSocket(httpServer, FRONTEND_ORIGIN);
