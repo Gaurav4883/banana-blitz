@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { socket } from "@/lib/socket";
+import PlayerStatsCard from "@/components/player-stats";
 
 import type { Puzzle, AnswerResult, Player } from "@/lib/api";
 
@@ -38,6 +39,8 @@ export default function GameLobby({
   currentUserId,
 }: GameLobbyProps) {
   const [copied, setCopied] = useState(false);
+  // which player's stats are open in the list (click a name to toggle)
+  const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [joined, setJoined] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
@@ -217,33 +220,46 @@ export default function GameLobby({
 
         <ul className="space-y-2">
           {players.map((player, index) => (
-            <li
-              key={player.userId}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2 ${
-                player.userId === currentUserId
-                  ? "bg-yellow-400/10 ring-1 ring-yellow-400/40"
-                  : "bg-slate-800"
-              }`}
-            >
-              <span className="w-4 text-xs text-slate-500">{index + 1}</span>
-              <span
-                title={player.online ? "Online" : "Away"}
-                className={`h-2 w-2 shrink-0 rounded-full ${
-                  player.online ? "bg-green-400" : "bg-slate-600"
+            <li key={player.userId}>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPlayer((current) =>
+                    current === player.userId ? null : player.userId,
+                  )
+                }
+                aria-expanded={selectedPlayer === player.userId}
+                title="Show player stats"
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition hover:brightness-125 ${
+                  player.userId === currentUserId
+                    ? "bg-yellow-400/10 ring-1 ring-yellow-400/40"
+                    : "bg-slate-800"
                 }`}
-              />
-              <span className="min-w-0 flex-1 truncate text-sm text-white">
-                {player.displayName ?? "Player"}
-                {player.userId === currentUserId && (
-                  <span className="text-slate-400"> (you)</span>
-                )}
-                {player.isGuest && (
-                  <span className="ml-1 text-xs text-slate-500">guest</span>
-                )}
-              </span>
-              <span className="text-sm font-bold text-yellow-400">
-                {player.score}
-              </span>
+              >
+                <span className="w-4 text-xs text-slate-500">{index + 1}</span>
+                <span
+                  title={player.online ? "Online" : "Away"}
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    player.online ? "bg-green-400" : "bg-slate-600"
+                  }`}
+                />
+                <span className="min-w-0 flex-1 truncate text-sm text-white">
+                  {player.displayName ?? "Player"}
+                  {player.userId === currentUserId && (
+                    <span className="text-slate-400"> (you)</span>
+                  )}
+                  {player.isGuest && (
+                    <span className="ml-1 text-xs text-slate-500">guest</span>
+                  )}
+                </span>
+                <span className="text-sm font-bold text-yellow-400">
+                  {player.score}
+                </span>
+              </button>
+
+              {selectedPlayer === player.userId && (
+                <PlayerStatsCard userId={player.userId} compact />
+              )}
             </li>
           ))}
         </ul>

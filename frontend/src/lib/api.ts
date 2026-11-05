@@ -180,3 +180,39 @@ export const authApi = {
     return request<null>("/auth/logout", { method: "POST" });
   },
 };
+
+export interface LeaderboardEntry {
+  rank: number;
+  userId: string;
+  displayName: string;
+  totalScore: number;
+  puzzlesSolved: number;
+  gamesPlayed: number;
+}
+
+export interface PlayerStats {
+  userId: string;
+  displayName: string | null;
+  isGuest: boolean;
+  verified: boolean;
+  memberSince: string;
+  gamesPlayed: number;
+  totalScore: number;
+  bestGameScore: number;
+  puzzlesSolved: number;
+  attempts: number;
+  accuracy: number;
+  // null for guests / unverified / no points yet
+  rank: number | null;
+}
+
+export const playersApi = {
+  leaderboard(limit = 10): Promise<LeaderboardEntry[]> {
+    return request<LeaderboardEntry[]>(`/players/leaderboard?limit=${limit}`);
+  },
+
+  // pass "me" for the signed in player
+  stats(userId: string): Promise<PlayerStats> {
+    return request<PlayerStats>(`/players/${encodeURIComponent(userId)}/stats`);
+  },
+};

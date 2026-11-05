@@ -107,3 +107,30 @@ When Bob answered correctly, Alice's browser also said "Correct answer, you scor
 ### Alternatives / limits
 - The invite code is the session ID (a cuid, hard to guess). Better: a short separate join code that the host can rotate, or invite-only sessions.
 - A host can't kick players yet.
+
+## Phase 3: Leaderboard and player stats
+
+### What's new
+- **Global leaderboard** (`GET /api/v1/players/leaderboard?limit=10`): the top players by total points across all their games.
+- **Player stats** (`GET /api/v1/players/me/stats` or `/players/:userId/stats`): rank, total points, games, puzzles solved, best game, accuracy (correct guesses / all guesses).
+- **Home screen:** "Your stats" and the leaderboard.
+- **In a game:** click a player in the lobby to see their stats.
+- **Live:** after any correct answer the server emits `leaderboard:changed`, and clients refetch.
+
+### Decisions
+| Decision | Why | Alternative |
+|---|---|---|
+| Only **verified** accounts are ranked | Makes email verification matter; stops throwaway or guest accounts spamming the board | Rank everyone: easy to cheat with new guests |
+| Totals worked out on request (`groupBy` over `SessionPlayer`) | Always correct; no second copy of the score that could drift | A stored `totalScore` on `User`: faster reads, but has to be updated in every scoring transaction |
+| Socket sends only a "changed" ping, not the data | One source of truth (the REST API); small messages | Push the full board to everyone: wasteful when most clients aren't looking at it |
+| Stats need sign in, no emails exposed | Stops scraping; privacy (only display names + numbers) | Public API |
+| `limit` clamped to 1-50 | Nobody can ask for the whole table in one request | No limit: easy way to make the DB work hard |
+
+### Tested (script against the DB)
+- A guest with 5000 points is **not** on the board; verified players are, in score order.
+- A player's `rank` from the stats endpoint matches their position on the board.
+- An unknown player id gives 404 `PLAYER_NOT_FOUND`.
+
+### Limits
+- `groupBy` over all rows is fine at this size, but at scale it would need a stored total or a materialised view.
+- The `leaderboard:changed` ping only reaches clients with an open socket (in a game). The home screen refetches when you come back to it.

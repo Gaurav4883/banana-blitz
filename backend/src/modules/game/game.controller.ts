@@ -1,6 +1,10 @@
 import { Request, Response } from "express";
 import { gameService } from "./game.service";
-import { emitPlayers, emitToGameSession } from "../../socket/socket";
+import {
+  emitLeaderboardChanged,
+  emitPlayers,
+  emitToGameSession,
+} from "../../socket/socket";
 
 function sendError(res: Response, error: unknown) {
   const code = error instanceof Error ? error.message : "INTERNAL_ERROR";
@@ -146,7 +150,10 @@ export const gameController = {
       };
 
       emitToGameSession(sessionId, "game:answer-updated", sharedUpdate);
-      if (result.correct) void emitPlayers(sessionId);
+      if (result.correct) {
+        void emitPlayers(sessionId);
+        emitLeaderboardChanged();
+      }
 
       return res.status(200).json({
         success: true,

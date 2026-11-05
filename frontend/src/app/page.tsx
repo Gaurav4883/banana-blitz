@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import GameLobby, { type SharedAnswerUpdate } from "@/components/game-lobby";
 import AuthPanel from "@/components/auth-panel";
 import VerifyEmailBanner from "@/components/verify-email-banner";
+import Leaderboard from "@/components/leaderboard";
+import PlayerStatsCard from "@/components/player-stats";
 import {
   AnswerResult,
   GameSession,
@@ -651,6 +653,19 @@ export default function Home() {
             </aside>
           )}
         </div>
+
+        {/* home screen extras, hidden during a game to keep the puzzle in view */}
+        {user && !session && !showUpgrade && (
+          <div className="mt-6 grid gap-6 md:grid-cols-2">
+            {/* key: refetch when the user changes (e.g. after verifying) */}
+            <PlayerStatsCard
+              key={`${user.id}-${user.emailVerifiedAt}`}
+              userId="me"
+              title="Your stats"
+            />
+            <Leaderboard currentUserId={user.id} />
+          </div>
+        )}
 
         <footer className="mt-10 text-center text-sm text-slate-600">
           Banana Blitz · Software for Enterprise Project

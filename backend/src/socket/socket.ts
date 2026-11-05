@@ -257,3 +257,12 @@ export async function emitPlayers(sessionId: string): Promise<void> {
     console.error("Failed to send player list:", error);
   }
 }
+
+/**
+ * Tells every connected client the leaderboard may have changed.
+ * Only a "go refetch" ping, the clients ask the REST API for the actual
+ * numbers so there's one source of truth.
+ */
+export function emitLeaderboardChanged(): void {
+  io?.emit("leaderboard:changed");
+}
