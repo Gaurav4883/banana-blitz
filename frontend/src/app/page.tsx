@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import GameLobby, { type SharedAnswerUpdate } from "@/components/game-lobby";
 import AuthPanel from "@/components/auth-panel";
 import VerifyEmailBanner from "@/components/verify-email-banner";
@@ -43,19 +43,11 @@ export default function Home() {
   const [error, setError] = useState("");
 
   const [joinSessionId, setJoinSessionId] = useState("");
+  // false while the socket is down mid game (shows the reconnecting banner)
+  const [socketConnected, setSocketConnected] = useState(true);
   const [difficulty, setDifficulty] = useState<Difficulty>("MEDIUM");
 
   const gameOver = session?.status === "COMPLETED";
-
-  // On page load ask the API who we are. The cookie is httpOnly so the
-  // browser JS can't read it directly, this is the only way to know.
-  useEffect(() => {
-    authApi
-      .me()
-      .then(setUser)
-      .catch(() => setUser(null))
-      .finally(() => setCheckingAuth(false));
-  }, []);
 
   // Back to the dashboard (stats + leaderboard). You stay a player of the
   // game, so you can rejoin later with the same invite code. Unmounting
@@ -159,8 +151,16 @@ export default function Home() {
     );
   }, []);
 
-  const joinExistingGame = async () => {
-    const sessionId = joinSessionId.trim();
+  // If the page was opened with ?game=<id> (refresh, or an invite link)
+  // join that game straight away.
+  const rejoinFromUrl = () => {
+    const gameId = new URLSearchParams(window.location.search).get("game");
+    if (gameId) void joinExistingGame(gameId);
+  };
+
+  // id is passed when we rejoin from the URL, otherwise use the input box
+  const joinExistingGame = async (id?: string) => {
+    const sessionId = (id ?? joinSessionId).trim();
 
     if (!sessionId) {
       setError("Please enter a game session ID.");
@@ -347,6 +347,41 @@ export default function Home() {
     }
   };
 
+  // On page load ask the API who we are. The cookie is httpOnly so the
+  // browser JS can't read it directly, this is the only way to know.
+  useEffect(() => {
+    authApi
+      .me()
+      .then((me) => {
+        setUser(me);
+        if (me) rejoinFromUrl();
+      })
+      .catch(() => setUser(null))
+      .finally(() => setCheckingAuth(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /*
+   * Keep the game id in the URL (?game=...). Then a page refresh, a closed
+   * tab or a dropped phone connection doesn't lose your game: when the page
+   * loads with ?game= we just join it again. It's also the invite link.
+   * replaceState so it doesn't fill up the back button history.
+   */
+  const wasInGame = useRef(false);
+
+  useEffect(() => {
+    // On first load there's no session yet, but ?game= must stay in the URL
+    // until rejoinFromUrl has read it. Only clear it after leaving a game.
+    if (!session && !wasInGame.current) return;
+    wasInGame.current = Boolean(session);
+
+    const url = new URL(window.location.href);
+
+    if (session) url.searchParams.set("game", session.id);
+    else url.searchParams.delete("game");
+
+    window.history.replaceState(null, "", url);
+  }, [session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const isPuzzleFinished = puzzle !== null && puzzle.status !== "ACTIVE";
   // puzzle still going for the others but I've used all my guesses
   const iAmOutOfGuesses =
@@ -358,18 +393,27 @@ export default function Home() {
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
       {/* wider page during a game so the lobby fits next to the puzzle */}
       <div className={`mx-auto ${session ? "max-w-6xl" : "max-w-3xl"}`}>
-        <header className={`${session ? "mb-6" : "mb-10"} text-center`}>
-          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-yellow-400">
-            A Banana Puzzle Game
-          </p>
+        {/* smaller header during a game so the puzzle fits on a phone screen */}
+        <header className={`${session ? "mb-4" : "mb-10"} text-center`}>
+          {!session && (
+            <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-yellow-400">
+              A Banana Puzzle Game
+            </p>
+          )}
 
-          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
+          <h1
+            className={`font-extrabold tracking-tight ${
+              session ? "text-2xl sm:text-3xl" : "text-4xl sm:text-5xl"
+            }`}
+          >
             Banana Blitz
           </h1>
 
-          <p className="mt-3 text-slate-400">
-            Solve the puzzle, earn points, and challenge yourself.
-          </p>
+          {!session && (
+            <p className="mt-3 text-slate-400">
+              Solve the puzzle, earn points, and challenge yourself.
+            </p>
+          )}
         </header>
 
         {/* account made but email not confirmed yet */}
@@ -434,8 +478,18 @@ export default function Home() {
           }
         >
           <div className="min-w-0">
+            {session && !socketConnected && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center gap-3 rounded-xl border border-yellow-700 bg-yellow-950/40 p-3 text-sm text-yellow-200 motion-safe:animate-slide-in"
+              >
+                <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-yellow-300 border-t-transparent" />
+                Connection lost. Reconnecting... your game is saved.
+              </div>
+            )}
+
             {session && (
-              <section className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <section className="mb-4 grid grid-cols-4 gap-2 sm:mb-6 sm:gap-3">
                 <StatCard
                   label="Your score"
                   value={players.find((p) => p.userId === user?.id)?.score ?? 0}
@@ -470,7 +524,15 @@ export default function Home() {
             <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-8">
               {checkingAuth && <LoadingMessage message="Loading..." />}
 
-              {!checkingAuth && !user && <AuthPanel onSignedIn={setUser} />}
+              {!checkingAuth && !user && (
+                <AuthPanel
+                  onSignedIn={(me) => {
+                    setUser(me);
+                    // e.g. a friend opened an invite link, then picked a name
+                    rejoinFromUrl();
+                  }}
+                />
+              )}
 
               {user && showUpgrade && (
                 <AuthPanel
@@ -651,10 +713,12 @@ export default function Home() {
                       {feedback && (
                         <div
                           role="status"
+                          // new key = React remounts it = animation plays again
+                          key={`${feedback.attemptsUsed}-${feedback.correct}-${feedback.byName ?? "me"}`}
                           className={`mt-5 rounded-xl p-4 ${
                             feedback.correct
-                              ? "border border-green-700 bg-green-950/50 text-green-300"
-                              : "border border-yellow-700 bg-yellow-950/40 text-yellow-200"
+                              ? "border border-green-700 bg-green-950/50 text-green-300 motion-safe:animate-pop"
+                              : "border border-yellow-700 bg-yellow-950/40 text-yellow-200 motion-safe:animate-shake"
                           }`}
                         >
                           <p className="font-semibold">{feedback.message}</p>
@@ -788,6 +852,10 @@ export default function Home() {
                 players={players}
                 onPlayersUpdated={setPlayers}
                 onGameFinished={handleGameFinished}
+                onConnectionChange={setSocketConnected}
+                onReconnected={() => {
+                  void refreshSession(session.id).catch(() => undefined);
+                }}
                 onPuzzleUpdated={handleSharedPuzzle}
                 onAnswerUpdated={handleSharedAnswer}
                 onPuzzleSkipped={handleSharedSkip}
@@ -859,11 +927,13 @@ function Countdown({
 
 function StatCard({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-center">
-      <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+    <div className="rounded-xl border border-slate-800 bg-slate-900 p-2 text-center sm:p-4">
+      <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500 sm:text-xs">
         {label}
       </p>
-      <p className="mt-2 text-2xl font-bold text-yellow-400">{value}</p>
+      <p className="mt-1 text-base font-bold text-yellow-400 sm:mt-2 sm:text-2xl">
+        {value}
+      </p>
     </div>
   );
 }
