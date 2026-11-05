@@ -72,3 +72,38 @@ Notes for explaining my design choices in the video and to my tutor.
 3. In another browser, create an account for "Bob" and join Alice's session ID. Alice sees "Bob joined the game".
 4. Sign out, then try `fetch("http://localhost:4000/api/v1/game/sessions", {method:"POST", credentials:"include"})` and show the 401.
 5. Show the `AuthSession` table in Prisma Studio: only hashes, no raw tokens.
+
+## Phase 2: Session ownership and per-player scores
+
+### The bug that started this
+When Bob answered correctly, Alice's browser also said "Correct answer, you scored 100 points". The socket broadcast didn't say **who** answered, so every browser assumed it was "you". Also, only one score existed (the session score), so there was no way to tell players apart.
+
+### Scoring rule (decided)
+- **Team score** = `GameSession.score`. Everyone in the session shares it and sees it go up.
+- **Personal score** = `SessionPlayer.score`. Only the player who solved the puzzle gets the points.
+- Both are updated **in the same serializable transaction**, so they can never disagree. Two players answering at the same moment still can't both score (the existing retry/conflict logic).
+- Every `PuzzleAttempt` now stores `userId`, so we know who made each guess (useful for stats later).
+
+### Ownership / authorization
+- `SessionPlayer` table with `@@unique([gameSessionId, userId])`. The **database** stops duplicate joins, not just the app code.
+- You become a player by creating a session (host) or calling `POST /sessions/:id/join`.
+- Reading a session, creating puzzles, answering and skipping all check membership. A non-player gets **403** `NOT_A_PLAYER`.
+- The Socket.IO `game:join` also checks membership, so non-players don't get the live events either.
+- This prevents **IDOR** (insecure direct object reference): knowing an ID isn't enough, you have to be a member. The demo for this is in the test below.
+- Removed the old `/api/v1/banana/*` routes. They let anyone submit answers with no login at all.
+
+### Player list (event-driven)
+- New event `game:players`: the list with scores plus `online` (does the player have a socket in the room?).
+- Sent on join, leave, disconnect and after a correct answer. Players with 2 tabs count once.
+
+### Tested (curl, 3 guests)
+| Test | Result |
+|---|---|
+| Eve (not joined) reads the session | 403 |
+| Eve answers a puzzle | 403 |
+| Bob joins, then answers correctly | Bob 100, Alice 0, team 100 |
+| Join with no cookie | 401 |
+
+### Alternatives / limits
+- The invite code is the session ID (a cuid, hard to guess). Better: a short separate join code that the host can rotate, or invite-only sessions.
+- A host can't kick players yet.
