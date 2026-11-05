@@ -16,7 +16,7 @@ dotenv.config();
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 4000;
+const PORT = Number(process.env.PORT) || 5000;
 
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 
