@@ -25,6 +25,11 @@ enum PuzzleStatus {
   SKIPPED
 }
 
+enum Role {
+  PLAYER
+  ADMIN
+}
+
 // ==========================================
 // USER
 // ==========================================
@@ -34,6 +39,10 @@ model User {
   displayName  String?
   email        String? @unique
   passwordHash String?
+
+  isGuest      Boolean       @default(true)
+  role         Role          @default(PLAYER)
+  authSessions AuthSession[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -112,4 +121,15 @@ model PuzzleAttempt {
 
   @@unique([puzzleId, attemptNumber])
   @@index([puzzleId, createdAt])
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
