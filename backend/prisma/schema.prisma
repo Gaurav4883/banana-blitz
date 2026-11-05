@@ -25,6 +25,11 @@ enum PuzzleStatus {
   SKIPPED
 }
 
+enum Role {
+  PLAYER
+  ADMIN
+}
+
 // ==========================================
 // USER
 // ==========================================
@@ -34,6 +39,18 @@ model User {
   displayName  String?
   email        String? @unique
   passwordHash String?
+
+  // Email verification. Only one code is live at a time, so it sits on the
+  // user row instead of its own table. The code itself is never stored, only its hash.
+  emailVerifiedAt    DateTime?
+  emailCodeHash      String?
+  emailCodeExpiresAt DateTime?
+  emailCodeSentAt    DateTime?
+  emailCodeAttempts  Int       @default(0)
+
+  isGuest      Boolean       @default(true)
+  role         Role          @default(PLAYER)
+  authSessions AuthSession[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -112,4 +129,15 @@ model PuzzleAttempt {
 
   @@unique([puzzleId, attemptNumber])
   @@index([puzzleId, createdAt])
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

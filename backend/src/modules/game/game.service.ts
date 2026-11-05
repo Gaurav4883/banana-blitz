@@ -57,10 +57,12 @@ export class GameService {
     return puzzle.gameSessionId;
   }
 
-  async createSession() {
+  async createSession(userId: string) {
     return prisma.gameSession.create({
       data: {
         status: GameSessionStatus.ACTIVE,
+        // the player who created the game (host)
+        userId,
       },
       select: {
         id: true,

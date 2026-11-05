@@ -7,6 +7,8 @@ import { prisma } from "./config/prisma";
 
 import bananaRoutes from "./modules/banana/banana.routes";
 import gameRoutes from "./modules/game/game.routes";
+import authRoutes from "./modules/auth/auth.routes";
+import { loadUser, requireAuth } from "./modules/auth/auth.middleware";
 import { createServer } from "http";
 import { initializeSocket } from "./socket/socket";
 
@@ -22,10 +24,13 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 app.use(
   cors({
     origin: FRONTEND_ORIGIN,
+    // needed so the browser sends/accepts the session cookie cross-origin
+    credentials: true,
   }),
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "10kb" }));
+app.use(loadUser);
 
 // test end point
 app.get("/api/v1/health", async (_req, res) => {
@@ -56,7 +61,9 @@ app.get("/api/v1/health", async (_req, res) => {
 
 // Banana API routes
 app.use("/api/v1/banana", bananaRoutes);
-app.use("/api/v1/game", gameRoutes);
+app.use("/api/v1/auth", authRoutes);
+// every game route needs a player now (guest or account)
+app.use("/api/v1/game", requireAuth, gameRoutes);
 
 const httpServer = createServer(app);
 const io = initializeSocket(httpServer, FRONTEND_ORIGIN);
