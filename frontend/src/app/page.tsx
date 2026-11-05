@@ -51,6 +51,20 @@ export default function Home() {
       .finally(() => setCheckingAuth(false));
   }, []);
 
+  // Back to the dashboard (stats + leaderboard). You stay a player of the
+  // game, so you can rejoin later with the same invite code. Unmounting
+  // GameLobby sends game:leave so the others see you go offline.
+  const leaveGame = () => {
+    setSession(null);
+    setSessionDetails(null);
+    setPlayers([]);
+    setPuzzle(null);
+    setFeedback(null);
+    setAnswer("");
+    setError("");
+    setJoinSessionId("");
+  };
+
   const signOut = async () => {
     try {
       await authApi.logout();
@@ -365,6 +379,15 @@ export default function Home() {
             </p>
 
             <div className="flex gap-2">
+              {session && (
+                <button
+                  onClick={leaveGame}
+                  disabled={loading !== null}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  ← Dashboard
+                </button>
+              )}
               {user.isGuest && !showUpgrade && (
                 <button
                   onClick={() => setShowUpgrade(true)}
@@ -629,6 +652,14 @@ export default function Home() {
                             className="w-full rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
                           >
                             {loading === "next" ? "Loading..." : "Next Puzzle"}
+                          </button>
+
+                          <button
+                            onClick={leaveGame}
+                            disabled={loading !== null}
+                            className="mt-3 w-full rounded-xl border border-slate-700 px-6 py-3 font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            Back to dashboard
                           </button>
                         </div>
                       )}
