@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import GameLobby, { type SharedAnswerUpdate } from "@/components/game-lobby";
 import AuthPanel from "@/components/auth-panel";
+import VerifyEmailBanner from "@/components/verify-email-banner";
 import {
   AnswerResult,
   GameSession,
@@ -316,6 +317,11 @@ export default function Home() {
           </p>
         </header>
 
+        {/* account made but email not confirmed yet */}
+        {user && !user.isGuest && !user.emailVerifiedAt && (
+          <VerifyEmailBanner user={user} onVerified={setUser} />
+        )}
+
         {user && (
           <section className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3">
             <p className="text-sm text-slate-300">
@@ -326,6 +332,11 @@ export default function Home() {
               {user.isGuest && (
                 <span className="ml-2 rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
                   guest
+                </span>
+              )}
+              {user.emailVerifiedAt && (
+                <span className="ml-2 rounded-full bg-green-950 px-2 py-0.5 text-xs text-green-300">
+                  verified
                 </span>
               )}
             </p>

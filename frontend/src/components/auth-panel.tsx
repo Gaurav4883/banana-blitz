@@ -99,7 +99,10 @@ export default function AuthPanel({
       <form onSubmit={submit} className="mt-6 space-y-3">
         {mode !== "login" && (
           <div>
-            <label htmlFor="displayName" className="mb-1 block text-sm text-slate-300">
+            <label
+              htmlFor="displayName"
+              className="mb-1 block text-sm text-slate-300"
+            >
               Display name
             </label>
             <input
@@ -118,7 +121,10 @@ export default function AuthPanel({
         {mode !== "guest" && (
           <>
             <div>
-              <label htmlFor="email" className="mb-1 block text-sm text-slate-300">
+              <label
+                htmlFor="email"
+                className="mb-1 block text-sm text-slate-300"
+              >
                 Email
               </label>
               <input
@@ -133,13 +139,18 @@ export default function AuthPanel({
             </div>
 
             <div>
-              <label htmlFor="password" className="mb-1 block text-sm text-slate-300">
+              <label
+                htmlFor="password"
+                className="mb-1 block text-sm text-slate-300"
+              >
                 Password
               </label>
               <input
                 id="password"
                 type="password"
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                autoComplete={
+                  mode === "login" ? "current-password" : "new-password"
+                }
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 minLength={mode === "register" ? 8 : undefined}
@@ -148,7 +159,9 @@ export default function AuthPanel({
                 className={inputClass}
               />
               {mode === "register" && (
-                <p className="mt-1 text-xs text-slate-500">At least 8 characters.</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  At least 8 characters.
+                </p>
               )}
             </div>
           </>

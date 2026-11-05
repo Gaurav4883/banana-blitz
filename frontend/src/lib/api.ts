@@ -13,6 +13,7 @@ export interface User {
   email: string | null;
   isGuest: boolean;
   role: "PLAYER" | "ADMIN";
+  emailVerifiedAt: string | null;
 }
 
 export interface GameSession {
@@ -59,7 +60,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   // if the server sends back html or nothing (e.g. it crashed) don't blow up on .json()
-  const result = (await response.json().catch(() => null)) as ApiResponse<T> | null;
+  const result = (await response
+    .json()
+    .catch(() => null)) as ApiResponse<T> | null;
 
   if (!result) {
     throw new Error(`Server error (${response.status})`);
@@ -140,6 +143,17 @@ export const authApi = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+  },
+
+  verifyEmail(code: string): Promise<User> {
+    return request<User>("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+  },
+
+  resendVerification(): Promise<null> {
+    return request<null>("/auth/resend-verification", { method: "POST" });
   },
 
   logout(): Promise<null> {

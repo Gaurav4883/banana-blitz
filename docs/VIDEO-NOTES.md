@@ -32,6 +32,28 @@ Notes for explaining my design choices in the video and to my tutor.
 | Rate limit (20 / 15 min / IP) on login, register, guest | Slows down password guessing. | Account lockout: can be abused to lock other people out. |
 | Guests as real `User` rows | The game code only ever deals with "a user"; upgrading is just an update. | Guest identity only in the browser: lost when the browser storage is cleared and can't own data on the server. |
 
+### Email verification (added to Phase 1)
+**Why:** without it, anyone can register with someone else's email. Verifying proves the person owns the inbox.
+
+**Flow**
+1. On register, the server makes a random 6-digit code with `crypto.randomInt` (not `Math.random`, which is predictable).
+2. Only `sha256(code)` is stored on the user row, with an expiry 15 minutes ahead.
+3. The code is emailed with **nodemailer**:
+   - real SMTP if `SMTP_HOST` is set (for example Gmail with an app password);
+   - otherwise, in development, an **Ethereal** test inbox, and the server log prints a preview link.
+4. The player types the code into the banner, then `POST /auth/verify-email` sets `emailVerifiedAt`.
+5. Limits: 5 wrong guesses per code (then 429, ask for a new one), and 60 seconds between resends so we can't be used to spam an inbox. The rate limiter is on top of that.
+6. If the email fails to send, the sign up still works; the player presses "Resend code".
+
+**Code vs link (alternative)**
+| 6-digit code (chosen) | Magic link |
+|---|---|
+| Works even if the email is opened on a different device | One click, nicer UX |
+| No token in URLs, browser history or server logs | The token sits in the URL; email scanners may "click" it |
+| Small search space, so it needs attempt limits | Long random token, so guessing isn't a problem |
+
+**Limitations:** unverified users can still play (only a banner). The plan is to require verification for the leaderboard. A 6-digit hash could be brute forced offline if the DB leaked, but it expires in 15 minutes; an HMAC with a server secret would fix that.
+
 ### Validation at the trust boundary
 - Display name: 2-20 chars, letters/numbers/space/`_`/`-` (no HTML in the lobby).
 - Email: lowercased, basic format check, unique in the DB (P2002 becomes **409**).
