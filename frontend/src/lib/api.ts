@@ -43,9 +43,21 @@ export interface AnswerResult {
   pointsAwarded: number;
 }
 
+export interface Player {
+  userId: string;
+  displayName: string | null;
+  isGuest: boolean;
+  score: number;
+  solvedCount: number;
+  joinedAt: string;
+  // only sent over the socket, the REST response doesn't know who's online
+  online?: boolean;
+}
+
 export interface SessionDetails extends GameSession {
   completedAt: string | null;
   puzzles: Puzzle[];
+  players: Player[];
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -104,6 +116,14 @@ export const gameApi = {
   ): Promise<{ message: string; sessionId: string }> {
     return request<{ message: string; sessionId: string }>(
       `/game/puzzles/${encodeURIComponent(puzzleId)}/skip`,
+      { method: "POST" },
+    );
+  },
+
+  // become a player of an existing session (safe to call more than once)
+  joinSession(sessionId: string): Promise<SessionDetails> {
+    return request<SessionDetails>(
+      `/game/sessions/${encodeURIComponent(sessionId)}/join`,
       { method: "POST" },
     );
   },

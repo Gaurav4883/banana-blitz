@@ -4,6 +4,7 @@ import { GameSessionStatus } from "@prisma/client";
 import { prisma } from "../config/prisma";
 import { readSessionCookie } from "../modules/auth/auth.middleware";
 import { authService } from "../modules/auth/auth.service";
+import { gameService } from "../modules/game/game.service";
 
 let io: Server;
 
@@ -62,6 +63,24 @@ async function handleJoinGame(socket: Socket, payload: JoinGamePayload) {
       return;
     }
 
+    // only players of the session get its live events (join via REST first)
+    const isPlayer = await prisma.sessionPlayer.findUnique({
+      where: {
+        gameSessionId_userId: {
+          gameSessionId: session.id,
+          userId: socket.data.user.id,
+        },
+      },
+      select: { id: true },
+    });
+
+    if (!isPlayer) {
+      socket.emit("game:error", {
+        message: "Join this game before connecting to it",
+      });
+      return;
+    }
+
     const roomName = getRoomName(session.id);
 
     // Avoid joining the same room multiple times.
@@ -88,6 +107,7 @@ async function handleJoinGame(socket: Socket, payload: JoinGamePayload) {
     });
 
     broadcastPlayerCount(session.id);
+    void emitPlayers(session.id);
 
     console.log(
       `Socket ${socket.id} (${socket.data.user.displayName}) joined ${roomName}`,
@@ -159,6 +179,7 @@ export function initializeSocket(
       });
 
       broadcastPlayerCount(payload.sessionId);
+      void emitPlayers(payload.sessionId);
     });
 
     socket.on("disconnecting", () => {
@@ -176,6 +197,7 @@ export function initializeSocket(
           // Allow the room membership to update before counting.
           setTimeout(() => {
             broadcastPlayerCount(sessionId);
+            void emitPlayers(sessionId);
           }, 0);
         }
       }
@@ -208,4 +230,30 @@ export function emitToGameSession(
   }
 
   io.to(getRoomName(sessionId)).emit(event, payload);
+}
+
+/**
+ * Sends the player list (scores + who is online right now) to everyone in
+ * the room. "Online" = has at least one socket in the room, so a player with
+ * two tabs open only counts once and closing one tab doesn't mark them away.
+ */
+export async function emitPlayers(sessionId: string): Promise<void> {
+  if (!io) return;
+
+  try {
+    const roomName = getRoomName(sessionId);
+    const sockets = await io.in(roomName).fetchSockets();
+    const onlineIds = new Set(sockets.map((s) => s.data.user?.id));
+    const players = await gameService.getPlayers(sessionId);
+
+    io.to(roomName).emit("game:players", {
+      sessionId,
+      players: players.map((player) => ({
+        ...player,
+        online: onlineIds.has(player.userId),
+      })),
+    });
+  } catch (error) {
+    console.error("Failed to send player list:", error);
+  }
 }

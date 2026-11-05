@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import { socket } from "@/lib/socket";
 
-import type { Puzzle, AnswerResult } from "@/lib/api";
+import type { Puzzle, AnswerResult, Player } from "@/lib/api";
 
 export interface SharedAnswerUpdate {
   puzzleId: string;
   result: AnswerResult;
   puzzleStatus: Puzzle["status"];
+  player: { userId: string; displayName: string | null };
   session: {
     id: string;
     score: number;
@@ -22,6 +23,9 @@ interface GameLobbyProps {
   onPuzzleUpdated: (puzzle: Puzzle) => void;
   onAnswerUpdated: (update: SharedAnswerUpdate) => void;
   onPuzzleSkipped: (puzzleId: string) => void;
+  onPlayersUpdated: (players: Player[]) => void;
+  players: Player[];
+  currentUserId: string;
 }
 
 export default function GameLobby({
@@ -29,7 +33,11 @@ export default function GameLobby({
   onPuzzleUpdated,
   onAnswerUpdated,
   onPuzzleSkipped,
+  onPlayersUpdated,
+  players,
+  currentUserId,
 }: GameLobbyProps) {
+  const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
   const [joined, setJoined] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
@@ -45,9 +53,16 @@ export default function GameLobby({
       onAnswerUpdated(data);
     };
 
-    const handlePuzzleSkipped = (data: { puzzleId: string }) => {
+    const handlePuzzleSkipped = (data: {
+      puzzleId: string;
+      displayName?: string | null;
+    }) => {
       onPuzzleSkipped(data.puzzleId);
-      setNotification("The current puzzle was skipped.");
+      setNotification(`${data.displayName ?? "Someone"} skipped the puzzle.`);
+    };
+
+    const handlePlayers = (data: { sessionId: string; players: Player[] }) => {
+      if (data.sessionId === sessionId) onPlayersUpdated(data.players);
     };
 
     setConnected(socket.connected);
@@ -124,6 +139,7 @@ export default function GameLobby({
     socket.on("game:puzzle-updated", handlePuzzleUpdated);
     socket.on("game:answer-updated", handleAnswerUpdated);
     socket.on("game:puzzle-skipped", handlePuzzleSkipped);
+    socket.on("game:players", handlePlayers);
 
     if (socket.connected) {
       joinRoom();
@@ -145,20 +161,26 @@ export default function GameLobby({
       socket.off("game:puzzle-updated", handlePuzzleUpdated);
       socket.off("game:answer-updated", handleAnswerUpdated);
       socket.off("game:puzzle-skipped", handlePuzzleSkipped);
+      socket.off("game:players", handlePlayers);
 
       socket.disconnect();
     };
   }, [sessionId]);
 
+  const copySessionId = async () => {
+    try {
+      await navigator.clipboard.writeText(sessionId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard can be blocked (e.g. not https), the ID is still visible
+    }
+  };
+
   return (
-    <section className="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="font-semibold text-white">Multiplayer Lobby</h2>
-          <p className="mt-1 text-xs text-slate-400">
-            Share your session ID with another player.
-          </p>
-        </div>
+    <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-white">Lobby</h2>
 
         <span
           className={`rounded-full px-3 py-1 text-xs font-semibold ${
@@ -167,24 +189,64 @@ export default function GameLobby({
               : "bg-yellow-950 text-yellow-300"
           }`}
         >
-          {connected ? "Connected" : "Connecting..."}
+          {connected ? (joined ? "Live" : "Joining...") : "Connecting..."}
         </span>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <div className="rounded-lg bg-slate-800 px-4 py-3">
-          <p className="text-xs text-slate-400">Players connected</p>
-          <p className="mt-1 text-xl font-bold text-yellow-400">
-            {playerCount}
-          </p>
+      <div className="mt-4 rounded-lg bg-slate-800 p-3">
+        <p className="text-xs text-slate-400">
+          Invite code (share with friends)
+        </p>
+        <div className="mt-1 flex items-center gap-2">
+          <code className="min-w-0 flex-1 truncate text-sm text-white">
+            {sessionId}
+          </code>
+          <button
+            onClick={() => void copySessionId()}
+            className="shrink-0 rounded-md bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600"
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
         </div>
+      </div>
 
-        <div className="min-w-0 flex-1 rounded-lg bg-slate-800 px-4 py-3">
-          <p className="text-xs text-slate-400">Room status</p>
-          <p className="mt-1 text-sm font-semibold text-white">
-            {joined ? "Joined successfully" : "Joining room..."}
-          </p>
-        </div>
+      <div className="mt-4">
+        <p className="mb-2 text-xs uppercase tracking-wider text-slate-500">
+          Players ({playerCount} online)
+        </p>
+
+        <ul className="space-y-2">
+          {players.map((player, index) => (
+            <li
+              key={player.userId}
+              className={`flex items-center gap-3 rounded-lg px-3 py-2 ${
+                player.userId === currentUserId
+                  ? "bg-yellow-400/10 ring-1 ring-yellow-400/40"
+                  : "bg-slate-800"
+              }`}
+            >
+              <span className="w-4 text-xs text-slate-500">{index + 1}</span>
+              <span
+                title={player.online ? "Online" : "Away"}
+                className={`h-2 w-2 shrink-0 rounded-full ${
+                  player.online ? "bg-green-400" : "bg-slate-600"
+                }`}
+              />
+              <span className="min-w-0 flex-1 truncate text-sm text-white">
+                {player.displayName ?? "Player"}
+                {player.userId === currentUserId && (
+                  <span className="text-slate-400"> (you)</span>
+                )}
+                {player.isGuest && (
+                  <span className="ml-1 text-xs text-slate-500">guest</span>
+                )}
+              </span>
+              <span className="text-sm font-bold text-yellow-400">
+                {player.score}
+              </span>
+            </li>
+          ))}
+        </ul>
       </div>
 
       {notification && (

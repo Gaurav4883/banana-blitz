@@ -7,6 +7,7 @@ import VerifyEmailBanner from "@/components/verify-email-banner";
 import {
   AnswerResult,
   GameSession,
+  Player,
   Puzzle,
   SessionDetails,
   User,
@@ -15,6 +16,9 @@ import {
 } from "@/lib/api";
 
 type LoadingAction = "start" | "answer" | "skip" | "next" | null;
+
+// byName is set when the answer came from another player over the socket
+type Feedback = AnswerResult & { byName?: string };
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
@@ -28,7 +32,8 @@ export default function Home() {
   const [puzzle, setPuzzle] = useState<Puzzle | null>(null);
 
   const [answer, setAnswer] = useState("");
-  const [feedback, setFeedback] = useState<AnswerResult | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState<LoadingAction>(null);
   const [error, setError] = useState("");
 
@@ -54,6 +59,7 @@ export default function Home() {
     setUser(null);
     setSession(null);
     setSessionDetails(null);
+    setPlayers([]);
     setPuzzle(null);
     setFeedback(null);
     setError("");
@@ -67,33 +73,47 @@ export default function Home() {
     setError("");
   }, []);
 
-  const handleSharedAnswer = useCallback((update: SharedAnswerUpdate) => {
-    setPuzzle((current) => {
-      if (!current || current.id !== update.puzzleId) {
-        return current;
-      }
+  const handleSharedAnswer = useCallback(
+    (update: SharedAnswerUpdate) => {
+      setPuzzle((current) => {
+        if (!current || current.id !== update.puzzleId) {
+          return current;
+        }
 
-      return {
-        ...current,
-        attemptsUsed: update.result.attemptsUsed,
-        status: update.puzzleStatus,
-      };
-    });
+        return {
+          ...current,
+          attemptsUsed: update.result.attemptsUsed,
+          status: update.puzzleStatus,
+        };
+      });
 
-    setFeedback(update.result);
-    setAnswer("");
+      // Every browser in the room gets this event, including the one that
+      // answered. Only say "you" if it was actually us.
+      const fromSomeoneElse = update.player.userId !== user?.id;
 
-    setSession((current) =>
-      current
-        ? {
-            ...current,
-            score: update.session.score,
-            totalPuzzles: update.session.totalPuzzles,
-            solvedPuzzles: update.session.solvedPuzzles,
-          }
-        : current,
-    );
-  }, []);
+      setFeedback({
+        ...update.result,
+        byName: fromSomeoneElse
+          ? (update.player.displayName ?? "Another player")
+          : undefined,
+      });
+
+      // don't wipe what I'm typing because someone else guessed wrong
+      if (!fromSomeoneElse || update.puzzleStatus !== "ACTIVE") setAnswer("");
+
+      setSession((current) =>
+        current
+          ? {
+              ...current,
+              score: update.session.score,
+              totalPuzzles: update.session.totalPuzzles,
+              solvedPuzzles: update.session.solvedPuzzles,
+            }
+          : current,
+      );
+    },
+    [user?.id],
+  );
 
   const handleSharedSkip = useCallback((puzzleId: string) => {
     setPuzzle((current) =>
@@ -119,7 +139,8 @@ export default function Home() {
     setSessionDetails(null);
 
     try {
-      const details = await gameApi.getSession(sessionId);
+      // join first, the server only lets players read a session
+      const details = await gameApi.joinSession(sessionId);
 
       if (details.status !== "ACTIVE") {
         throw new Error("This game session is not active.");
@@ -135,6 +156,7 @@ export default function Home() {
       });
 
       setSessionDetails(details);
+      setPlayers(details.players);
 
       const activePuzzle = details.puzzles.find(
         (item) => item.status === "ACTIVE",
@@ -158,6 +180,13 @@ export default function Home() {
   const refreshSession = async (sessionId: string) => {
     const details = await gameApi.getSession(sessionId);
     setSessionDetails(details);
+    // keep the online flags we got from the socket, REST doesn't know them
+    setPlayers((current) =>
+      details.players.map((player) => ({
+        ...player,
+        online: current.find((p) => p.userId === player.userId)?.online,
+      })),
+    );
     setSession({
       id: details.id,
       status: details.status,
@@ -293,17 +322,9 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
-      {user && session && (
-        <GameLobby
-          sessionId={session.id}
-          onPuzzleUpdated={handleSharedPuzzle}
-          onAnswerUpdated={handleSharedAnswer}
-          onPuzzleSkipped={handleSharedSkip}
-        />
-      )}
-
-      <div className="mx-auto max-w-3xl">
-        <header className="mb-10 text-center">
+      {/* wider page during a game so the lobby fits next to the puzzle */}
+      <div className={`mx-auto ${session ? "max-w-6xl" : "max-w-3xl"}`}>
+        <header className={`${session ? "mb-6" : "mb-10"} text-center`}>
           <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-yellow-400">
             A Banana Puzzle Game
           </p>
@@ -360,233 +381,276 @@ export default function Home() {
           </section>
         )}
 
-        {session && (
-          <section className="mb-6 grid grid-cols-3 gap-3">
-            <StatCard label="Score" value={session.score} />
-            <StatCard label="Puzzles" value={session.totalPuzzles} />
-            <StatCard label="Solved" value={session.solvedPuzzles} />
-          </section>
-        )}
+        {/* On large screens: game on the left, lobby on the right (sticky,
+            so it stays in view). On phones the lobby just goes underneath. */}
+        <div
+          className={
+            session
+              ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start"
+              : ""
+          }
+        >
+          <div className="min-w-0">
+            {session && (
+              <section className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard label="Team score" value={session.score} />
+                <StatCard
+                  label="Your score"
+                  value={players.find((p) => p.userId === user?.id)?.score ?? 0}
+                />
+                <StatCard label="Puzzles" value={session.totalPuzzles} />
+                <StatCard label="Solved" value={session.solvedPuzzles} />
+              </section>
+            )}
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-8">
-          {checkingAuth && <LoadingMessage message="Loading..." />}
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-8">
+              {checkingAuth && <LoadingMessage message="Loading..." />}
 
-          {!checkingAuth && !user && <AuthPanel onSignedIn={setUser} />}
+              {!checkingAuth && !user && <AuthPanel onSignedIn={setUser} />}
 
-          {user && showUpgrade && (
-            <AuthPanel
-              initialMode="register"
-              upgradingGuest={user}
-              onSignedIn={(updated) => {
-                setUser(updated);
-                setShowUpgrade(false);
-              }}
-              onCancel={() => setShowUpgrade(false)}
-            />
-          )}
-
-          {user && !showUpgrade && (
-            <>
-              {!session && !loading && (
-                <div className="py-10 text-center">
-                  <div className="mb-5 text-6xl" aria-hidden="true">
-                    🍌
-                  </div>
-
-                  <h2 className="text-2xl font-bold">Ready to play?</h2>
-
-                  <p className="mt-2 text-slate-400">
-                    Create a new game or join an existing game.
-                  </p>
-
-                  <button
-                    onClick={startGame}
-                    className="mt-7 w-full rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300"
-                  >
-                    Create New Game
-                  </button>
-
-                  <div className="my-7 flex items-center gap-3">
-                    <div className="h-px flex-1 bg-slate-700" />
-                    <span className="text-xs uppercase text-slate-500">
-                      or join a game
-                    </span>
-                    <div className="h-px flex-1 bg-slate-700" />
-                  </div>
-
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void joinExistingGame();
-                    }}
-                    className="flex flex-col gap-3 sm:flex-row"
-                  >
-                    <input
-                      value={joinSessionId}
-                      onChange={(event) => setJoinSessionId(event.target.value)}
-                      placeholder="Enter game session ID"
-                      className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-yellow-400"
-                    />
-
-                    <button
-                      type="submit"
-                      disabled={!joinSessionId.trim()}
-                      className="rounded-xl border border-yellow-400 px-6 py-3 font-bold text-yellow-400 transition hover:bg-yellow-400 hover:text-slate-950 disabled:opacity-50"
-                    >
-                      Join Game
-                    </button>
-                  </form>
-                </div>
+              {user && showUpgrade && (
+                <AuthPanel
+                  initialMode="register"
+                  upgradingGuest={user}
+                  onSignedIn={(updated) => {
+                    setUser(updated);
+                    setShowUpgrade(false);
+                  }}
+                  onCancel={() => setShowUpgrade(false)}
+                />
               )}
 
-              {loading === "start" && (
-                <LoadingMessage message="Starting your game..." />
-              )}
+              {user && !showUpgrade && (
+                <>
+                  {!session && !loading && (
+                    <div className="py-10 text-center">
+                      <div className="mb-5 text-6xl" aria-hidden="true">
+                        🍌
+                      </div>
 
-              {session && !puzzle && loading !== "start" && (
-                <div className="py-10 text-center">
-                  <p className="text-slate-300">
-                    Your session has been created, but no puzzle is loaded.
-                  </p>
-                  <button
-                    onClick={loadNextPuzzle}
-                    disabled={loading !== null}
-                    className="mt-5 rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 disabled:opacity-50"
-                  >
-                    Retry loading puzzle
-                  </button>
-                </div>
-              )}
+                      <h2 className="text-2xl font-bold">Ready to play?</h2>
 
-              {puzzle && (
-                <div>
-                  <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <h2 className="text-xl font-bold">Solve this puzzle</h2>
-                      <p className="mt-1 text-sm text-slate-400">
-                        Enter the number you think is correct.
+                      <p className="mt-2 text-slate-400">
+                        Create a new game or join an existing game.
                       </p>
-                    </div>
-
-                    <span className="rounded-full bg-slate-800 px-4 py-2 text-sm text-slate-300">
-                      Attempts: {puzzle.attemptsUsed}/{puzzle.maxAttempts}
-                    </span>
-                  </div>
-
-                  <div className="overflow-hidden rounded-xl border border-slate-700 bg-white p-3">
-                    <img
-                      src={puzzle.questionUrl}
-                      alt="Banana puzzle"
-                      className="mx-auto max-h-[420px] w-full object-contain"
-                    />
-                  </div>
-
-                  {feedback && (
-                    <div
-                      role="status"
-                      className={`mt-5 rounded-xl p-4 ${
-                        feedback.correct
-                          ? "border border-green-700 bg-green-950/50 text-green-300"
-                          : "border border-yellow-700 bg-yellow-950/40 text-yellow-200"
-                      }`}
-                    >
-                      <p className="font-semibold">{feedback.message}</p>
-
-                      {feedback.correct && (
-                        <p className="mt-1 text-sm">
-                          You earned {feedback.pointsAwarded} points!
-                        </p>
-                      )}
-
-                      {!feedback.correct && (
-                        <p className="mt-1 text-sm">
-                          {feedback.attemptsRemaining} attempts remaining.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {error && (
-                    <div
-                      role="alert"
-                      className="mt-5 rounded-xl border border-red-800 bg-red-950/40 p-4 text-sm text-red-300"
-                    >
-                      {error}
-                    </div>
-                  )}
-
-                  {!isPuzzleFinished ? (
-                    <>
-                      <form onSubmit={submitAnswer} className="mt-6">
-                        <label
-                          htmlFor="answer"
-                          className="mb-2 block text-sm font-medium text-slate-300"
-                        >
-                          Your answer
-                        </label>
-
-                        <div className="flex gap-3">
-                          <input
-                            id="answer"
-                            type="number"
-                            step="any"
-                            value={answer}
-                            onChange={(event) => setAnswer(event.target.value)}
-                            placeholder="Enter a number"
-                            disabled={loading !== null}
-                            className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-yellow-400"
-                          />
-
-                          <button
-                            type="submit"
-                            disabled={loading !== null || !answer.trim()}
-                            className="rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {loading === "answer" ? "Checking..." : "Submit"}
-                          </button>
-                        </div>
-                      </form>
 
                       <button
-                        onClick={skipPuzzle}
-                        disabled={loading !== null}
-                        className="mt-4 w-full rounded-xl border border-slate-700 px-5 py-3 font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+                        onClick={startGame}
+                        className="mt-7 w-full rounded-xl bg-yellow-400 px-8 py-3 font-bold text-slate-950 transition hover:bg-yellow-300"
                       >
-                        {loading === "skip" ? "Skipping..." : "Skip Puzzle"}
+                        Create New Game
                       </button>
-                    </>
-                  ) : (
-                    <div className="mt-6">
-                      <p className="mb-4 text-center text-slate-300">
-                        {puzzle.status === "SOLVED"
-                          ? "Well done! Ready for another puzzle?"
-                          : puzzle.status === "FAILED"
-                            ? "This puzzle has ended. Try the next one!"
-                            : puzzle.status === "EXPIRED"
-                              ? "This puzzle has expired. Let's try another!"
-                              : "This puzzle was skipped."}
-                      </p>
 
+                      <div className="my-7 flex items-center gap-3">
+                        <div className="h-px flex-1 bg-slate-700" />
+                        <span className="text-xs uppercase text-slate-500">
+                          or join a game
+                        </span>
+                        <div className="h-px flex-1 bg-slate-700" />
+                      </div>
+
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void joinExistingGame();
+                        }}
+                        className="flex flex-col gap-3 sm:flex-row"
+                      >
+                        <input
+                          value={joinSessionId}
+                          onChange={(event) =>
+                            setJoinSessionId(event.target.value)
+                          }
+                          placeholder="Enter game session ID"
+                          className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-yellow-400"
+                        />
+
+                        <button
+                          type="submit"
+                          disabled={!joinSessionId.trim()}
+                          className="rounded-xl border border-yellow-400 px-6 py-3 font-bold text-yellow-400 transition hover:bg-yellow-400 hover:text-slate-950 disabled:opacity-50"
+                        >
+                          Join Game
+                        </button>
+                      </form>
+                    </div>
+                  )}
+
+                  {loading === "start" && (
+                    <LoadingMessage message="Starting your game..." />
+                  )}
+
+                  {session && !puzzle && loading !== "start" && (
+                    <div className="py-10 text-center">
+                      <p className="text-slate-300">
+                        Your session has been created, but no puzzle is loaded.
+                      </p>
                       <button
                         onClick={loadNextPuzzle}
                         disabled={loading !== null}
-                        className="w-full rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
+                        className="mt-5 rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 disabled:opacity-50"
                       >
-                        {loading === "next" ? "Loading..." : "Next Puzzle"}
+                        Retry loading puzzle
                       </button>
                     </div>
                   )}
-                </div>
-              )}
-            </>
-          )}
-        </section>
 
-        {session && (
-          <p className="mt-5 text-center text-xs text-slate-500">
-            Session ID: {session.id}
-          </p>
-        )}
+                  {puzzle && (
+                    <div>
+                      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h2 className="text-xl font-bold">
+                            Solve this puzzle
+                          </h2>
+                          <p className="mt-1 text-sm text-slate-400">
+                            Enter the number you think is correct.
+                          </p>
+                        </div>
+
+                        <span className="rounded-full bg-slate-800 px-4 py-2 text-sm text-slate-300">
+                          Attempts: {puzzle.attemptsUsed}/{puzzle.maxAttempts}
+                        </span>
+                      </div>
+
+                      <div className="overflow-hidden rounded-xl border border-slate-700 bg-white p-3">
+                        <img
+                          src={puzzle.questionUrl}
+                          alt="Banana puzzle"
+                          className="mx-auto max-h-[420px] w-full object-contain"
+                        />
+                      </div>
+
+                      {feedback && (
+                        <div
+                          role="status"
+                          className={`mt-5 rounded-xl p-4 ${
+                            feedback.correct
+                              ? "border border-green-700 bg-green-950/50 text-green-300"
+                              : "border border-yellow-700 bg-yellow-950/40 text-yellow-200"
+                          }`}
+                        >
+                          <p className="font-semibold">{feedback.message}</p>
+
+                          {feedback.byName && (
+                            <p className="mt-1 text-sm font-semibold">
+                              {feedback.byName}{" "}
+                              {feedback.correct
+                                ? "solved it!"
+                                : "guessed wrong."}
+                            </p>
+                          )}
+
+                          {feedback.correct && (
+                            <p className="mt-1 text-sm">
+                              {feedback.byName
+                                ? `+${feedback.pointsAwarded} to the team score.`
+                                : `You earned ${feedback.pointsAwarded} points!`}
+                            </p>
+                          )}
+
+                          {!feedback.correct && (
+                            <p className="mt-1 text-sm">
+                              {feedback.attemptsRemaining} attempts remaining.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {error && (
+                        <div
+                          role="alert"
+                          className="mt-5 rounded-xl border border-red-800 bg-red-950/40 p-4 text-sm text-red-300"
+                        >
+                          {error}
+                        </div>
+                      )}
+
+                      {!isPuzzleFinished ? (
+                        <>
+                          <form onSubmit={submitAnswer} className="mt-6">
+                            <label
+                              htmlFor="answer"
+                              className="mb-2 block text-sm font-medium text-slate-300"
+                            >
+                              Your answer
+                            </label>
+
+                            <div className="flex gap-3">
+                              <input
+                                id="answer"
+                                type="number"
+                                step="any"
+                                value={answer}
+                                onChange={(event) =>
+                                  setAnswer(event.target.value)
+                                }
+                                placeholder="Enter a number"
+                                disabled={loading !== null}
+                                className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-yellow-400"
+                              />
+
+                              <button
+                                type="submit"
+                                disabled={loading !== null || !answer.trim()}
+                                className="rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {loading === "answer"
+                                  ? "Checking..."
+                                  : "Submit"}
+                              </button>
+                            </div>
+                          </form>
+
+                          <button
+                            onClick={skipPuzzle}
+                            disabled={loading !== null}
+                            className="mt-4 w-full rounded-xl border border-slate-700 px-5 py-3 font-semibold text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            {loading === "skip" ? "Skipping..." : "Skip Puzzle"}
+                          </button>
+                        </>
+                      ) : (
+                        <div className="mt-6">
+                          <p className="mb-4 text-center text-slate-300">
+                            {puzzle.status === "SOLVED"
+                              ? "Well done! Ready for another puzzle?"
+                              : puzzle.status === "FAILED"
+                                ? "This puzzle has ended. Try the next one!"
+                                : puzzle.status === "EXPIRED"
+                                  ? "This puzzle has expired. Let's try another!"
+                                  : "This puzzle was skipped."}
+                          </p>
+
+                          <button
+                            onClick={loadNextPuzzle}
+                            disabled={loading !== null}
+                            className="w-full rounded-xl bg-yellow-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-yellow-300 disabled:opacity-50"
+                          >
+                            {loading === "next" ? "Loading..." : "Next Puzzle"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          </div>
+
+          {user && session && (
+            <aside className="lg:sticky lg:top-6">
+              <GameLobby
+                sessionId={session.id}
+                currentUserId={user.id}
+                players={players}
+                onPlayersUpdated={setPlayers}
+                onPuzzleUpdated={handleSharedPuzzle}
+                onAnswerUpdated={handleSharedAnswer}
+                onPuzzleSkipped={handleSharedSkip}
+              />
+            </aside>
+          )}
+        </div>
 
         <footer className="mt-10 text-center text-sm text-slate-600">
           Banana Blitz · Software for Enterprise Project
