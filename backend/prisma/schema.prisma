@@ -55,7 +55,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  gameSessions GameSession[]
+  gameSessions   GameSession[]
+  sessionPlayers SessionPlayer[]
+  attempts       PuzzleAttempt[]
 
   @@index([createdAt])
 }
@@ -77,8 +79,9 @@ model GameSession {
   completedAt DateTime?
   updatedAt   DateTime  @updatedAt
 
-  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user    User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   puzzles Puzzle[]
+  players SessionPlayer[]
 
   @@index([userId, startedAt])
   @@index([status, startedAt])
@@ -123,9 +126,13 @@ model PuzzleAttempt {
   isCorrect     Boolean
   attemptNumber Int
 
+  // who submitted it (null for attempts made before accounts existed)
+  userId String?
+
   createdAt DateTime @default(now())
 
   puzzle Puzzle @relation(fields: [puzzleId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@unique([puzzleId, attemptNumber])
   @@index([puzzleId, createdAt])
@@ -139,5 +146,29 @@ model AuthSession {
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+}
+
+// ==========================================
+// SESSION PLAYER
+// ==========================================
+
+// Who is part of a game session, and their own score in it.
+// GameSession.score stays the team total.
+model SessionPlayer {
+  id            String @id @default(cuid())
+  gameSessionId String
+  userId        String
+
+  score       Int @default(0)
+  solvedCount Int @default(0)
+
+  joinedAt DateTime @default(now())
+
+  gameSession GameSession @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // one row per player per session, the DB stops duplicates for us
+  @@unique([gameSessionId, userId])
   @@index([userId])
 }
