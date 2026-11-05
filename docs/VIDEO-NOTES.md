@@ -199,3 +199,34 @@ After Phase 3, multiplayer had no real point. Everyone saw the same puzzle, the 
 ### Limits
 - "Play again" makes a new game; the other players have to join with the new invite code.
 - Any player can still skip the puzzle for everyone.
+
+## Phase 5: Reconnect, loading/error states and mobile
+
+### Disconnect and reconnect
+- **The game is in the URL** (`?game=<id>`, kept up to date with `history.replaceState`). A refresh, a closed tab or a phone losing signal doesn't lose the game: on load the page sees `?game=` and joins again. The same link is the **invite link** ("Copy link" in the lobby). A friend who opens it picks a name and goes straight into the game.
+- **Socket drops:** Socket.IO reconnects by itself, but the server forgets the rooms, so every (re)connect sends `game:join` again. After a *re*connect the page also reloads the game from REST, because any events sent while we were offline (answers, a new puzzle, game over) were missed. Events are fire-and-forget; the database is the source of truth.
+- A yellow **"Connection lost. Reconnecting... your game is saved"** banner shows while the socket is down. Nothing is lost, because every score and guess is already in PostgreSQL.
+
+### Loading and error states
+- `fetch` failing with no response ("Failed to fetch") becomes "Can't reach the game server. Check your connection and try again."
+- 429 from the rate limiter becomes a friendly "going a bit fast" message.
+- Buttons are disabled while a request is in flight. Together with the serializable transactions on the server, this stops double submissions.
+
+### Feedback and mobile
+- A correct answer **pops**, a wrong one **shakes** (CSS keyframes in `globals.css`). They use `motion-safe:`, so people who turned on "reduce motion" in their OS don't get them (accessibility).
+- During a game the header shrinks and the 4 stat cards sit in one row, so on a 375px phone the puzzle, answer box and Submit fit on the first screen with no sideways scrolling.
+- The page title is now "Banana Blitz" (it was "Create Next App").
+
+### Tested in the browser
+| Check | Result |
+|---|---|
+| Create a game | the URL becomes `?game=<id>` |
+| Reload with that URL | back in the same game, the timer still counting |
+| Stop the backend | the banner shows, the lobby says "Connecting..." |
+| Start the backend again | the banner goes away, the lobby is "Live", back in the room |
+| 375px wide | no horizontal scroll; the puzzle and Submit fit on screen |
+
+### Alternatives / limits
+- **Session ID in `localStorage`** instead of the URL: it survives a refresh too, but can't be shared as a link, and two tabs would fight over it.
+- **Socket.IO connection state recovery** (it replays missed events): it needs the server to buffer events. Reloading from REST is simpler and always correct.
+- A puzzle can expire while you're offline; you see it as expired when you come back.

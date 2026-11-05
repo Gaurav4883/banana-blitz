@@ -82,15 +82,29 @@ export interface SessionDetails extends GameSession {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    // send the httpOnly session cookie to the API (different port = cross-origin)
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      // send the httpOnly session cookie to the API (different port = cross-origin)
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+  } catch {
+    // fetch only throws when there's no response at all (server down,
+    // wifi off), "Failed to fetch" means nothing to a player
+    throw new Error(
+      "Can't reach the game server. Check your connection and try again.",
+    );
+  }
+
+  if (response.status === 429) {
+    throw new Error("You're going a bit fast, wait a moment and try again.");
+  }
 
   // if the server sends back html or nothing (e.g. it crashed) don't blow up on .json()
   const result = (await response

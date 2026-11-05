@@ -26,6 +26,10 @@ interface GameLobbyProps {
   onPuzzleSkipped: (puzzleId: string) => void;
   onPlayersUpdated: (players: Player[]) => void;
   onGameFinished: (players: Player[]) => void;
+  // so the page can show a "reconnecting" banner
+  onConnectionChange: (connected: boolean) => void;
+  // socket came back after a drop, events may have been missed
+  onReconnected: () => void;
   players: Player[];
   currentUserId: string;
 }
@@ -37,6 +41,8 @@ export default function GameLobby({
   onPuzzleSkipped,
   onPlayersUpdated,
   onGameFinished,
+  onConnectionChange,
+  onReconnected,
   players,
   currentUserId,
 }: GameLobbyProps) {
@@ -80,13 +86,24 @@ export default function GameLobby({
     setConnected(socket.connected);
     setJoined(false);
 
+    // Socket.IO reconnects by itself, but the server forgets which rooms we
+    // were in, so every (re)connect has to join the room again. If it's not
+    // the first connect we also reload the game, anything that happened
+    // while we were offline (answers, new puzzle, game over) was missed.
+    let hasConnectedBefore = false;
+
     const joinRoom = () => {
       setConnected(true);
+      onConnectionChange(true);
       socket.emit("game:join", { sessionId });
+
+      if (hasConnectedBefore) onReconnected();
+      hasConnectedBefore = true;
     };
 
     const handleDisconnect = () => {
       setConnected(false);
+      onConnectionChange(false);
       setJoined(false);
       setPlayerCount(0);
     };
@@ -183,7 +200,10 @@ export default function GameLobby({
 
   const copySessionId = async () => {
     try {
-      await navigator.clipboard.writeText(sessionId);
+      // a link opens the game straight away (page reads ?game=)
+      await navigator.clipboard.writeText(
+        `${window.location.origin}/?game=${encodeURIComponent(sessionId)}`,
+      );
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -209,7 +229,7 @@ export default function GameLobby({
 
       <div className="mt-4 rounded-lg bg-slate-800 p-3">
         <p className="text-xs text-slate-400">
-          Invite code (share with friends)
+          Invite code (or copy the link and send it)
         </p>
         <div className="mt-1 flex items-center gap-2">
           <code className="min-w-0 flex-1 truncate text-sm text-white">
@@ -219,7 +239,7 @@ export default function GameLobby({
             onClick={() => void copySessionId()}
             className="shrink-0 rounded-md bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600"
           >
-            {copied ? "Copied!" : "Copy"}
+            {copied ? "Copied!" : "Copy link"}
           </button>
         </div>
       </div>
