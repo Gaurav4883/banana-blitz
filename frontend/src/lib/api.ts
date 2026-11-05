@@ -7,6 +7,14 @@ interface ApiResponse<T> {
   data: T;
 }
 
+export interface User {
+  id: string;
+  displayName: string | null;
+  email: string | null;
+  isGuest: boolean;
+  role: "PLAYER" | "ADMIN";
+}
+
 export interface GameSession {
   id: string;
   status: "ACTIVE" | "COMPLETED" | "ABANDONED";
@@ -42,13 +50,20 @@ export interface SessionDetails extends GameSession {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
+    // send the httpOnly session cookie to the API (different port = cross-origin)
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...options.headers,
     },
   });
 
-  const result = (await response.json()) as ApiResponse<T>;
+  // if the server sends back html or nothing (e.g. it crashed) don't blow up on .json()
+  const result = (await response.json().catch(() => null)) as ApiResponse<T> | null;
+
+  if (!result) {
+    throw new Error(`Server error (${response.status})`);
+  }
 
   if (!response.ok || !result.success) {
     throw new Error(result.message || "Something went wrong");
@@ -94,5 +109,40 @@ export const gameApi = {
     return request<SessionDetails>(
       `/game/sessions/${encodeURIComponent(sessionId)}`,
     );
+  },
+};
+
+export const authApi = {
+  me(): Promise<User | null> {
+    return request<User | null>("/auth/me");
+  },
+
+  guest(displayName: string): Promise<User> {
+    return request<User>("/auth/guest", {
+      method: "POST",
+      body: JSON.stringify({ displayName }),
+    });
+  },
+
+  register(input: {
+    displayName?: string;
+    email: string;
+    password: string;
+  }): Promise<User> {
+    return request<User>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  login(email: string, password: string): Promise<User> {
+    return request<User>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  logout(): Promise<null> {
+    return request<null>("/auth/logout", { method: "POST" });
   },
 };

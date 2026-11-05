@@ -85,20 +85,37 @@ export default function GameLobby({
       }
     };
 
-    const handlePlayerJoined = (data: { sessionId: string }) => {
+    const handlePlayerJoined = (data: {
+      sessionId: string;
+      displayName?: string | null;
+    }) => {
       if (data.sessionId === sessionId) {
-        setNotification("A player joined the game.");
+        setNotification(`${data.displayName ?? "A player"} joined the game.`);
       }
     };
 
-    const handlePlayerLeft = (data: { sessionId: string }) => {
+    const handlePlayerLeft = (data: {
+      sessionId: string;
+      displayName?: string | null;
+    }) => {
       if (data.sessionId === sessionId) {
-        setNotification("A player left the game.");
+        setNotification(`${data.displayName ?? "A player"} left the game.`);
       }
+    };
+
+    // server refuses the handshake if the session cookie is missing/expired
+    const handleConnectError = (err: Error) => {
+      setConnected(false);
+      setNotification(
+        err.message === "UNAUTHORIZED"
+          ? "Your session expired, please sign in again."
+          : "Can't reach the game server, retrying...",
+      );
     };
 
     socket.on("connect", joinRoom);
     socket.on("disconnect", handleDisconnect);
+    socket.on("connect_error", handleConnectError);
     socket.on("game:joined", handleJoined);
     socket.on("game:error", handleError);
     socket.on("game:player-count", handlePlayerCount);
@@ -119,6 +136,7 @@ export default function GameLobby({
 
       socket.off("connect", joinRoom);
       socket.off("disconnect", handleDisconnect);
+      socket.off("connect_error", handleConnectError);
       socket.off("game:joined", handleJoined);
       socket.off("game:error", handleError);
       socket.off("game:player-count", handlePlayerCount);
