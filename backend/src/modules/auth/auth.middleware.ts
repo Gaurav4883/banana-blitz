@@ -41,9 +41,14 @@ export function getRequestToken(req: Request) {
 }
 
 /** Looks up the user if there is a cookie but never blocks the request. */
-export async function loadUser(req: Request, _res: Response, next: NextFunction) {
+export async function loadUser(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) {
   try {
-    req.user = (await authService.getUserFromToken(getRequestToken(req))) ?? undefined;
+    req.user =
+      (await authService.getUserFromToken(getRequestToken(req))) ?? undefined;
     next();
   } catch (error) {
     next(error);

@@ -40,6 +40,14 @@ model User {
   email        String? @unique
   passwordHash String?
 
+  // Email verification. Only one code is live at a time, so it sits on the
+  // user row instead of its own table. The code itself is never stored, only its hash.
+  emailVerifiedAt    DateTime?
+  emailCodeHash      String?
+  emailCodeExpiresAt DateTime?
+  emailCodeSentAt    DateTime?
+  emailCodeAttempts  Int       @default(0)
+
   isGuest      Boolean       @default(true)
   role         Role          @default(PLAYER)
   authSessions AuthSession[]

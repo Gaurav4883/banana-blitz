@@ -2,6 +2,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { authController } from "./auth.controller";
+import { requireAuth } from "./auth.middleware";
 
 const router = Router();
 
@@ -22,5 +23,17 @@ router.post("/register", credentialLimiter, authController.register);
 router.post("/login", credentialLimiter, authController.login);
 router.post("/logout", authController.logout);
 router.get("/me", authController.me);
+router.post(
+  "/verify-email",
+  requireAuth,
+  credentialLimiter,
+  authController.verifyEmail,
+);
+router.post(
+  "/resend-verification",
+  requireAuth,
+  credentialLimiter,
+  authController.resendVerification,
+);
 
 export default router;

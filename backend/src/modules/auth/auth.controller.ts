@@ -29,12 +29,33 @@ function sendError(res: Response, error: unknown) {
       status: 401,
       message: "Email or password is incorrect",
     },
+    INVALID_CODE: { status: 400, message: "That code is not right" },
+    CODE_EXPIRED: {
+      status: 410,
+      message: "This code has expired, send a new one",
+    },
+    TOO_MANY_CODE_ATTEMPTS: {
+      status: 429,
+      message: "Too many wrong codes, send a new one",
+    },
+    ALREADY_VERIFIED: { status: 409, message: "Email is already verified" },
+    NO_EMAIL: { status: 400, message: "This account has no email" },
+    RESEND_TOO_SOON: {
+      status: 429,
+      message: "Please wait a minute before asking for another code",
+    },
+    EMAIL_SEND_FAILED: {
+      status: 502,
+      message: "Couldn't send the email right now, try again soon",
+    },
   };
 
   const known = knownErrors[code];
 
   if (known) {
-    return res.status(known.status).json({ success: false, message: known.message });
+    return res
+      .status(known.status)
+      .json({ success: false, message: known.message });
   }
 
   console.error("Auth API error:", error);
@@ -55,10 +76,14 @@ export const authController = {
       // drop any older session first so we don't leave junk rows around
       await authService.revokeSession(getRequestToken(req));
 
-      const { user, token } = await authService.createGuest(req.body?.displayName);
+      const { user, token } = await authService.createGuest(
+        req.body?.displayName,
+      );
       signIn(res, token);
 
-      return res.status(201).json({ success: true, message: "Playing as guest", data: user });
+      return res
+        .status(201)
+        .json({ success: true, message: "Playing as guest", data: user });
     } catch (error) {
       return sendError(res, error);
     }
@@ -77,7 +102,9 @@ export const authController = {
 
       signIn(res, token);
 
-      return res.status(201).json({ success: true, message: "Account created", data: user });
+      return res
+        .status(201)
+        .json({ success: true, message: "Account created", data: user });
     } catch (error) {
       return sendError(res, error);
     }
@@ -90,7 +117,9 @@ export const authController = {
       await authService.revokeSession(getRequestToken(req));
       signIn(res, token);
 
-      return res.status(200).json({ success: true, message: "Signed in", data: user });
+      return res
+        .status(200)
+        .json({ success: true, message: "Signed in", data: user });
     } catch (error) {
       return sendError(res, error);
     }
@@ -104,7 +133,9 @@ export const authController = {
       const { maxAge: _maxAge, ...clearOptions } = sessionCookieOptions;
       res.clearCookie(SESSION_COOKIE, clearOptions);
 
-      return res.status(200).json({ success: true, message: "Signed out", data: null });
+      return res
+        .status(200)
+        .json({ success: true, message: "Signed out", data: null });
     } catch (error) {
       return sendError(res, error);
     }
@@ -118,5 +149,31 @@ export const authController = {
       message: req.user ? "Signed in" : "Not signed in",
       data: req.user ?? null,
     });
+  },
+
+  async verifyEmail(req: Request, res: Response) {
+    try {
+      const user = await authService.verifyEmail(req.user!, req.body?.code);
+      return res
+        .status(200)
+        .json({ success: true, message: "Email verified", data: user });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  },
+
+  async resendVerification(req: Request, res: Response) {
+    try {
+      await authService.resendVerification(req.user!);
+      return res
+        .status(200)
+        .json({
+          success: true,
+          message: "A new code is on its way",
+          data: null,
+        });
+    } catch (error) {
+      return sendError(res, error);
+    }
   },
 };
