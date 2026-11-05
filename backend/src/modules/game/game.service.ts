@@ -57,12 +57,82 @@ export class GameService {
     return puzzle.gameSessionId;
   }
 
+  /**
+   * Throws NOT_A_PLAYER unless the user has joined this session.
+   * Stops someone who only knows (or guesses) a session ID from reading or
+   * answering in it without joining. Works with either prisma or a tx.
+   */
+  async assertPlayer(
+    sessionId: string,
+    userId: string,
+    db: Prisma.TransactionClient = prisma,
+  ) {
+    const player = await db.sessionPlayer.findUnique({
+      where: { gameSessionId_userId: { gameSessionId: sessionId, userId } },
+      select: { id: true },
+    });
+
+    if (!player) {
+      throw new Error("NOT_A_PLAYER");
+    }
+  }
+
+  /** Players in a session, best score first. Used for the side panel list. */
+  async getPlayers(sessionId: string) {
+    const players = await prisma.sessionPlayer.findMany({
+      where: { gameSessionId: sessionId },
+      orderBy: [{ score: "desc" }, { joinedAt: "asc" }],
+      select: {
+        userId: true,
+        score: true,
+        solvedCount: true,
+        joinedAt: true,
+        user: { select: { displayName: true, isGuest: true } },
+      },
+    });
+
+    return players.map(({ user, ...player }) => ({
+      ...player,
+      displayName: user.displayName,
+      isGuest: user.isGuest,
+    }));
+  }
+
+  /**
+   * Join an active session as a player. Calling it twice is fine,
+   * upsert + the unique (session, user) index means no duplicate rows.
+   */
+  async joinSession(sessionId: string, userId: string) {
+    const session = await prisma.gameSession.findUnique({
+      where: { id: sessionId },
+      select: { status: true },
+    });
+
+    if (!session) {
+      throw new Error("GAME_SESSION_NOT_FOUND");
+    }
+
+    if (session.status !== GameSessionStatus.ACTIVE) {
+      throw new Error("GAME_SESSION_NOT_ACTIVE");
+    }
+
+    await prisma.sessionPlayer.upsert({
+      where: { gameSessionId_userId: { gameSessionId: sessionId, userId } },
+      create: { gameSessionId: sessionId, userId },
+      update: {},
+    });
+
+    return this.getSession(sessionId, userId);
+  }
+
   async createSession(userId: string) {
     return prisma.gameSession.create({
       data: {
         status: GameSessionStatus.ACTIVE,
         // the player who created the game (host)
         userId,
+        // and the host is also the first player
+        players: { create: { userId } },
       },
       select: {
         id: true,
@@ -75,7 +145,9 @@ export class GameService {
     });
   }
 
-  async createPuzzle(sessionId: string) {
+  async createPuzzle(sessionId: string, userId: string) {
+    await this.assertPlayer(sessionId, userId);
+
     /*
      * First check whether a usable active puzzle already exists.
      * Expired ACTIVE puzzles are marked EXPIRED before checking.
@@ -222,7 +294,7 @@ export class GameService {
     });
   }
 
-  async submitAnswer(puzzleId: string, answer: number) {
+  async submitAnswer(puzzleId: string, answer: number, userId: string) {
     if (!Number.isFinite(answer)) {
       throw new Error("INVALID_ANSWER");
     }
@@ -235,6 +307,9 @@ export class GameService {
       if (!puzzle) {
         throw new Error("PUZZLE_NOT_FOUND");
       }
+
+      // checked inside the transaction so it's the same snapshot as the rest
+      await this.assertPlayer(puzzle.gameSessionId, userId, tx);
 
       if (puzzle.status !== PuzzleStatus.ACTIVE) {
         throw new Error("PUZZLE_NOT_ACTIVE");
@@ -279,6 +354,7 @@ export class GameService {
           answer,
           isCorrect,
           attemptNumber,
+          userId,
         },
       });
 
@@ -297,6 +373,21 @@ export class GameService {
           data: {
             score: { increment: POINTS_PER_CORRECT_ANSWER },
             solvedPuzzles: { increment: 1 },
+          },
+        });
+
+        /*
+         * Scoring rule: the session score is the TEAM total (everyone sees
+         * it go up), but the personal points only go to the player who
+         * actually solved it. Same transaction so the two can't disagree.
+         */
+        await tx.sessionPlayer.update({
+          where: {
+            gameSessionId_userId: { gameSessionId: puzzle.gameSessionId, userId },
+          },
+          data: {
+            score: { increment: POINTS_PER_CORRECT_ANSWER },
+            solvedCount: { increment: 1 },
           },
         });
 
@@ -339,7 +430,7 @@ export class GameService {
     return result;
   }
 
-  async skipPuzzle(puzzleId: string) {
+  async skipPuzzle(puzzleId: string, userId: string) {
     const result = await this.runSerializableTransaction(async (tx) => {
       const puzzle = await tx.puzzle.findUnique({
         where: { id: puzzleId },
@@ -354,6 +445,8 @@ export class GameService {
       if (!puzzle) {
         throw new Error("PUZZLE_NOT_FOUND");
       }
+
+      await this.assertPlayer(puzzle.gameSessionId, userId, tx);
 
       if (puzzle.status !== PuzzleStatus.ACTIVE) {
         throw new Error("PUZZLE_NOT_ACTIVE");
@@ -387,7 +480,16 @@ export class GameService {
     return result;
   }
 
-  async getSession(sessionId: string) {
+  async getSession(sessionId: string, userId: string) {
+    // 404 before 403, so a missing session isn't reported as "not a player"
+    const exists = await prisma.gameSession.count({ where: { id: sessionId } });
+
+    if (!exists) {
+      throw new Error("GAME_SESSION_NOT_FOUND");
+    }
+
+    await this.assertPlayer(sessionId, userId);
+
     // Ensure expired puzzles are not returned as ACTIVE in session history.
     await prisma.puzzle.updateMany({
       where: {
@@ -430,7 +532,7 @@ export class GameService {
       throw new Error("GAME_SESSION_NOT_FOUND");
     }
 
-    return session;
+    return { ...session, players: await this.getPlayers(sessionId) };
   }
 }
 

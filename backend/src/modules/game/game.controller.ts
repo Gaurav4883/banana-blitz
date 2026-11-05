@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { gameService } from "./game.service";
-import { emitToGameSession } from "../../socket/socket";
+import { emitPlayers, emitToGameSession } from "../../socket/socket";
 
 function sendError(res: Response, error: unknown) {
   const code = error instanceof Error ? error.message : "INTERNAL_ERROR";
@@ -33,6 +33,10 @@ function sendError(res: Response, error: unknown) {
     INVALID_ANSWER: {
       status: 400,
       message: "Please submit a valid numeric answer",
+    },
+    NOT_A_PLAYER: {
+      status: 403,
+      message: "You are not a player in this game. Join it first.",
     },
     GAME_CONFLICT: {
       status: 409,
@@ -75,7 +79,7 @@ export const gameController = {
 
   async createPuzzle(req: Request, res: Response) {
     try {
-      const { sessionId } = req.params;
+      const sessionId = req.params.sessionId as string;
 
       if (!sessionId) {
         return res.status(400).json({
@@ -84,7 +88,7 @@ export const gameController = {
         });
       }
 
-      const puzzle = await gameService.createPuzzle(sessionId);
+      const puzzle = await gameService.createPuzzle(sessionId, req.user!.id);
       emitToGameSession(sessionId, "game:puzzle-updated", puzzle);
 
       return res.status(201).json({
@@ -99,7 +103,7 @@ export const gameController = {
 
   async submitAnswer(req: Request, res: Response) {
     try {
-      const { puzzleId } = req.params;
+      const puzzleId = req.params.puzzleId as string;
       const { answer } = req.body as { answer?: unknown };
 
       if (!puzzleId) {
@@ -116,9 +120,10 @@ export const gameController = {
         });
       }
 
+      const userId = req.user!.id;
       const sessionId = await gameService.getPuzzleSessionId(puzzleId);
-      const result = await gameService.submitAnswer(puzzleId, answer);
-      const session = await gameService.getSession(sessionId);
+      const result = await gameService.submitAnswer(puzzleId, answer, userId);
+      const session = await gameService.getSession(sessionId, userId);
 
       const puzzleStatus = result.correct
         ? "SOLVED"
@@ -130,6 +135,8 @@ export const gameController = {
         puzzleId,
         result,
         puzzleStatus,
+        // who answered, so the other browsers don't show "you scored"
+        player: { userId, displayName: req.user!.displayName },
         session: {
           id: session.id,
           score: session.score,
@@ -139,6 +146,7 @@ export const gameController = {
       };
 
       emitToGameSession(sessionId, "game:answer-updated", sharedUpdate);
+      if (result.correct) void emitPlayers(sessionId);
 
       return res.status(200).json({
         success: true,
@@ -152,7 +160,7 @@ export const gameController = {
 
   async skipPuzzle(req: Request, res: Response) {
     try {
-      const { puzzleId } = req.params;
+      const puzzleId = req.params.puzzleId as string;
 
       if (!puzzleId) {
         return res.status(400).json({
@@ -161,9 +169,12 @@ export const gameController = {
         });
       }
 
-      const result = await gameService.skipPuzzle(puzzleId);
+      const result = await gameService.skipPuzzle(puzzleId, req.user!.id);
 
-      emitToGameSession(result.sessionId, "game:puzzle-skipped", { puzzleId });
+      emitToGameSession(result.sessionId, "game:puzzle-skipped", {
+        puzzleId,
+        displayName: req.user!.displayName,
+      });
 
       return res.status(200).json({
         success: true,
@@ -177,7 +188,7 @@ export const gameController = {
 
   async getSession(req: Request, res: Response) {
     try {
-      const { sessionId } = req.params;
+      const sessionId = req.params.sessionId as string;
 
       if (!sessionId) {
         return res.status(400).json({
@@ -186,11 +197,28 @@ export const gameController = {
         });
       }
 
-      const session = await gameService.getSession(sessionId);
+      const session = await gameService.getSession(sessionId, req.user!.id);
 
       return res.status(200).json({
         success: true,
         message: "Game session retrieved",
+        data: session,
+      });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  },
+
+  async joinSession(req: Request, res: Response) {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const session = await gameService.joinSession(sessionId, req.user!.id);
+
+      void emitPlayers(sessionId);
+
+      return res.status(200).json({
+        success: true,
+        message: "Joined the game",
         data: session,
       });
     } catch (error) {

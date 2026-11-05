@@ -5,7 +5,6 @@ import dotenv from "dotenv";
 import { connectDatabase } from "./config/database";
 import { prisma } from "./config/prisma";
 
-import bananaRoutes from "./modules/banana/banana.routes";
 import gameRoutes from "./modules/game/game.routes";
 import authRoutes from "./modules/auth/auth.routes";
 import { loadUser, requireAuth } from "./modules/auth/auth.middleware";
@@ -59,8 +58,7 @@ app.get("/api/v1/health", async (_req, res) => {
   }
 });
 
-// Banana API routes
-app.use("/api/v1/banana", bananaRoutes);
+// (old /api/v1/banana routes removed - they skipped auth, the game routes replace them)
 app.use("/api/v1/auth", authRoutes);
 // every game route needs a player now (guest or account)
 app.use("/api/v1/game", requireAuth, gameRoutes);
