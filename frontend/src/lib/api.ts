@@ -16,9 +16,25 @@ export interface User {
   emailVerifiedAt: string | null;
 }
 
+export type Difficulty = "EASY" | "MEDIUM" | "HARD";
+
+// Same numbers as DIFFICULTY_SETTINGS on the backend, only used to show the
+// player what they're picking. The server is what actually enforces them.
+export const DIFFICULTIES: {
+  value: Difficulty;
+  label: string;
+  detail: string;
+}[] = [
+  { value: "EASY", label: "Easy", detail: "5 min · 10 guesses · 100 pts" },
+  { value: "MEDIUM", label: "Medium", detail: "3 min · 5 guesses · 200 pts" },
+  { value: "HARD", label: "Hard", detail: "90 s · 3 guesses · 400 pts" },
+];
+
 export interface GameSession {
   id: string;
   status: "ACTIVE" | "COMPLETED" | "ABANDONED";
+  difficulty: Difficulty;
+  puzzlesPerGame: number;
   score: number;
   totalPuzzles: number;
   solvedPuzzles: number;
@@ -33,6 +49,8 @@ export interface Puzzle {
   attemptsUsed: number;
   expiresAt: string;
   createdAt: string;
+  // my own guesses on this puzzle (race mode: everyone has their own)
+  myAttemptsUsed?: number;
 }
 
 export interface AnswerResult {
@@ -41,6 +59,9 @@ export interface AnswerResult {
   attemptsUsed: number;
   attemptsRemaining: number;
   pointsAwarded: number;
+  speedBonus: number;
+  puzzleStatus: Puzzle["status"];
+  gameFinished: boolean;
 }
 
 export interface Player {
@@ -88,9 +109,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const gameApi = {
-  createSession(): Promise<GameSession> {
+  createSession(difficulty: Difficulty): Promise<GameSession> {
     return request<GameSession>("/game/sessions", {
       method: "POST",
+      body: JSON.stringify({ difficulty }),
     });
   },
 

@@ -25,6 +25,7 @@ interface GameLobbyProps {
   onAnswerUpdated: (update: SharedAnswerUpdate) => void;
   onPuzzleSkipped: (puzzleId: string) => void;
   onPlayersUpdated: (players: Player[]) => void;
+  onGameFinished: (players: Player[]) => void;
   players: Player[];
   currentUserId: string;
 }
@@ -35,6 +36,7 @@ export default function GameLobby({
   onAnswerUpdated,
   onPuzzleSkipped,
   onPlayersUpdated,
+  onGameFinished,
   players,
   currentUserId,
 }: GameLobbyProps) {
@@ -66,6 +68,13 @@ export default function GameLobby({
 
     const handlePlayers = (data: { sessionId: string; players: Player[] }) => {
       if (data.sessionId === sessionId) onPlayersUpdated(data.players);
+    };
+
+    const handleFinished = (data: { sessionId: string; players: Player[] }) => {
+      if (data.sessionId === sessionId) {
+        onGameFinished(data.players);
+        setNotification("Game over!");
+      }
     };
 
     setConnected(socket.connected);
@@ -143,6 +152,7 @@ export default function GameLobby({
     socket.on("game:answer-updated", handleAnswerUpdated);
     socket.on("game:puzzle-skipped", handlePuzzleSkipped);
     socket.on("game:players", handlePlayers);
+    socket.on("game:finished", handleFinished);
 
     if (socket.connected) {
       joinRoom();
@@ -165,6 +175,7 @@ export default function GameLobby({
       socket.off("game:answer-updated", handleAnswerUpdated);
       socket.off("game:puzzle-skipped", handlePuzzleSkipped);
       socket.off("game:players", handlePlayers);
+      socket.off("game:finished", handleFinished);
 
       socket.disconnect();
     };

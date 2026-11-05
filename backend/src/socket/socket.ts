@@ -266,3 +266,19 @@ export async function emitPlayers(sessionId: string): Promise<void> {
 export function emitLeaderboardChanged(): void {
   io?.emit("leaderboard:changed");
 }
+
+/**
+ * Race mode: the game is over, send everyone the final standings.
+ * Players come back sorted by score so [0] is the winner (ties share it).
+ */
+export async function emitGameFinished(sessionId: string): Promise<void> {
+  if (!io) return;
+
+  try {
+    const players = await gameService.getPlayers(sessionId);
+    io.to(getRoomName(sessionId)).emit("game:finished", { sessionId, players });
+    emitLeaderboardChanged();
+  } catch (error) {
+    console.error("Failed to send game results:", error);
+  }
+}
