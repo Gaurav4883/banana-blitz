@@ -2,6 +2,8 @@ import { Server as HttpServer } from "http";
 import { Server, Socket } from "socket.io";
 import { GameSessionStatus } from "@prisma/client";
 import { prisma } from "../config/prisma";
+import { readSessionCookie } from "../modules/auth/auth.middleware";
+import { authService } from "../modules/auth/auth.service";
 
 let io: Server;
 
@@ -81,11 +83,15 @@ async function handleJoinGame(socket: Socket, payload: JoinGamePayload) {
     socket.to(roomName).emit("game:player-joined", {
       sessionId: session.id,
       socketId: socket.id,
+      userId: socket.data.user.id,
+      displayName: socket.data.user.displayName,
     });
 
     broadcastPlayerCount(session.id);
 
-    console.log(`Socket ${socket.id} joined ${roomName}`);
+    console.log(
+      `Socket ${socket.id} (${socket.data.user.displayName}) joined ${roomName}`,
+    );
   } catch (error) {
     console.error("Socket join error:", error);
 
@@ -103,7 +109,27 @@ export function initializeSocket(
     cors: {
       origin: frontendOrigin,
       methods: ["GET", "POST"],
+      credentials: true,
     },
+  });
+
+  // Same cookie as the REST API. The handshake is a normal HTTP request so
+  // the browser sends bb_session with it. No valid session = no connection.
+  // Note: this only checks once at connect, a socket that's already open
+  // stays open after logout until it disconnects.
+  io.use(async (socket, next) => {
+    try {
+      const token = readSessionCookie(socket.handshake.headers.cookie);
+      const user = await authService.getUserFromToken(token);
+
+      if (!user) return next(new Error("UNAUTHORIZED"));
+
+      socket.data.user = user;
+      next();
+    } catch (error) {
+      console.error("Socket auth error:", error);
+      next(new Error("UNAUTHORIZED"));
+    }
   });
 
   io.on("connection", (socket) => {
@@ -129,6 +155,7 @@ export function initializeSocket(
       socket.to(roomName).emit("game:player-left", {
         sessionId: payload.sessionId,
         socketId: socket.id,
+        displayName: socket.data.user.displayName,
       });
 
       broadcastPlayerCount(payload.sessionId);
@@ -143,6 +170,7 @@ export function initializeSocket(
           socket.to(roomName).emit("game:player-left", {
             sessionId,
             socketId: socket.id,
+            displayName: socket.data.user.displayName,
           });
 
           // Allow the room membership to update before counting.

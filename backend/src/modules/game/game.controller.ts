@@ -58,9 +58,10 @@ function sendError(res: Response, error: unknown) {
 }
 
 export const gameController = {
-  async createSession(_req: Request, res: Response) {
+  async createSession(req: Request, res: Response) {
     try {
-      const session = await gameService.createSession();
+      // requireAuth runs before this so req.user is always set here
+      const session = await gameService.createSession(req.user!.id);
 
       return res.status(201).json({
         success: true,
